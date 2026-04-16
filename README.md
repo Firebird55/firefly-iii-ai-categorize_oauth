@@ -1,81 +1,57 @@
-# Firefly III AI categorization
+# Firefly III AI Categorization (Three-Outcome Fork)
 
-This project allows you to automatically categorize your expenses in [Firefly III](https://www.firefly-iii.org/) by
-using OpenAI.
+> Fork of [bahuma20/firefly-iii-ai-categorize](https://github.com/bahuma20/firefly-iii-ai-categorize), rebuilt with a three-outcome classification model inspired by [OpenAccountants](https://github.com/openaccountants/openaccountants).
 
-## Please fork me
-Unfortunately i am not able to invest more time into maintaining this project. 
+Automatically categorize transactions in [Firefly III](https://www.firefly-iii.org/) using an LLM. Every transaction gets one of three outcomes:
 
-Feel free to fork it and create a PR that adds a link to your fork in the README file.
+| Outcome | What happens | Firefly III tag |
+|---------|-------------|-----------------|
+| **Classified** | Confident match → category is set | `ai:classified` |
+| **Assumed** | Best guess with conservative default → category is set, assumption disclosed in notes | `ai:assumed` |
+| **Needs Review** | Can't classify → no category set, flagged for human review | `ai:needs-review` |
+
+## What changed from the original
+
+The [original project](https://github.com/bahuma20/firefly-iii-ai-categorize) is unmaintained (the author [invited forks](https://github.com/bahuma20/firefly-iii-ai-categorize#please-fork-me)). This fork:
+
+- **Three-outcome model** instead of binary (match or nothing). When the AI isn't confident enough to classify but can make a reasonable guess, it applies a conservative default and discloses the assumption — rather than silently guessing or doing nothing.
+- **Conservative defaults principle**: when uncertain between two categories, picks the one less favorable to the user (e.g., non-deductible over deductible). You can always override, but the default is safe.
+- **Modern OpenAI SDK** (v4+) with structured JSON output instead of the deprecated v3 completions API.
+- **Configurable model** — defaults to `gpt-4o-mini`; set `OPENAI_MODEL` to use any OpenAI-compatible model.
+- **OpenAI-compatible base URL** — set `OPENAI_BASE_URL` to point at any compatible API (Ollama, Azure, etc.).
+- **Transaction amount** included in the prompt for better classification.
+- **Notes on transactions** — assumptions and reasoning are written to Firefly III transaction notes for auditability.
+- **Pagination** for categories (the original only fetched the first page).
+- **Health endpoint** at `GET /health`.
+- **Failed job tracking** in the UI.
 
 ## How it works
 
-It provides a webhook that you can set up to be called every time a new expense is added.
+```
+Firefly III webhook (new transaction)
+        │
+        ▼
+   Parse & validate
+        │
+        ▼
+   Fetch your Firefly III categories
+        │
+        ▼
+   Send to LLM with three-outcome prompt
+        │
+        ├── CLASSIFIED  → set category + tag "ai:classified"
+        ├── ASSUMED     → set category + tag "ai:assumed" + note with assumption
+        └── NEEDS_REVIEW → tag "ai:needs-review" + note explaining why
+```
 
-It will then generate a prompt for OpenAI, including your existing categories, the recipient and the description of the
-transaction.
+## Quick start
 
-OpenAI will, based on that prompt, guess the category for the transaction.
-
-If it is one of your existing categories, the tool will set the category on the transaction and also add a tag to the
-transaction.
-
-If it cannot detect the category, it will not update anything.
-
-## Privacy
-
-Please note that some details of the transactions will be sent to OpenAI as information to guess the category.
-
-These are:
-
-- Transaction description
-- Name of transaction destination account
-- Names of all categories
-
-## Installation
-
-### 1. Get a Firefly Personal Access Token
-
-You can generate your own Personal Access Token on the Profile page. Login to your Firefly III instance, go to
-"Options" > "Profile" > "OAuth" and find "Personal Access Tokens". Create a new Personal Access Token by clicking on
-"Create New Token". Give it a recognizable name and press "Create". The Personal Access Token is pretty long. Use a tool
-like Notepad++ or Visual Studio Code to copy-and-paste it.
-
-![Step 1](docs/img/pat1.png)
-![Step 2](docs/img/pat2.png)
-![Step 3](docs/img/pat3.png)
-
-### 2. Get an OpenAI API Key
-
-The project needs to be configured with your OpenAI account's secret key.
-
-- Sign up for an account by going to the OpenAI website (https://platform.openai.com)
-- Once an account is created, visit the API keys page at https://platform.openai.com/account/api-keys.
-- Create a new key by clicking the "Create new secret key" button.
-
-When an API key is created you'll be able to copy the secret key and use it.
-
-![OpenAI screenshot](docs/img/openai-key.png)
-
-Note: OpenAI currently provides 5$ free credits for 3 months which is great since you won’t have to provide your
-payment details to begin interacting with the API for the first time.
-
-After that you have to enable billing in your account.
-
-Tip: Make sure to set budget limits to prevent suprises at the end of the month.
-
-### 3. Start the application via Docker
-
-#### 3.1 Docker Compose
-
-Create a new file `docker-compose.yml` with this content (or add to existing docker-compose file):
+### Docker Compose
 
 ```yaml
-version: '3.3'
-
 services:
   categorizer:
-    image: ghcr.io/bahuma20/firefly-iii-ai-categorize:latest
+    image: ghcr.io/openaccountants/firefly-iii-ai-categorize:latest
     restart: always
     ports:
       - "3000:3000"
@@ -83,76 +59,78 @@ services:
       FIREFLY_URL: "https://firefly.example.com"
       FIREFLY_PERSONAL_TOKEN: "eyabc123..."
       OPENAI_API_KEY: "sk-abc123..."
+      # OPENAI_MODEL: "gpt-4o-mini"        # optional, default gpt-4o-mini
+      # OPENAI_BASE_URL: ""                 # optional, for Ollama/Azure/etc.
+      # TAG_PREFIX: "ai"                    # optional, default "ai"
+      # ENABLE_UI: "true"                   # optional, default false
 ```
 
-Make sure to set the environment variables correctly.
+### Manual Docker
 
-Run `docker-compose up -d`.
-
-Now the application is running and accessible at port 3000.
-
-#### 3.2 Manually via Docker
-
-Run this Docker command to start the application container. Edit the environment variables to match the credentials
-created before.
-
-```shell
+```bash
 docker run -d \
--p 3000:3000 \
--e FIREFLY_URL=https://firefly.example.com \
--e FIREFLY_PERSONAL_TOKEN=eyabc123... \
--e OPENAI_API_KEY=sk-abc123... \
-ghcr.io/bahuma20/firefly-iii-ai-categorize:latest
+  -p 3000:3000 \
+  -e FIREFLY_URL=https://firefly.example.com \
+  -e FIREFLY_PERSONAL_TOKEN=eyabc123... \
+  -e OPENAI_API_KEY=sk-abc123... \
+  ghcr.io/openaccountants/firefly-iii-ai-categorize:latest
 ```
 
-### 4. Set up the webhook
+### Without Docker
 
-After starting your container, you have to set up the webhook in Firefly that will automatically trigger the
-categorization everytime a new transaction comes in.
+```bash
+git clone https://github.com/openaccountants/firefly-iii-ai-categorize.git
+cd firefly-iii-ai-categorize
+npm install
+FIREFLY_URL=https://firefly.example.com \
+FIREFLY_PERSONAL_TOKEN=eyabc123... \
+OPENAI_API_KEY=sk-abc123... \
+npm start
+```
 
-- Login to your Firefly instance
-- In the sidebar go to "Automation" > "Webhooks"
-- Click "Create new webhook"
-- Give the webhook a title. For example "AI Categorizer"
-- Set "Trigger" to "After transaction creation" (should be the default)
-- Set "Response" to "Transaction details" (should be the default)
-- Set "Delivery" to "JSON" (should be the default)
-- Set "URL" to the URL where the application is reachable + "/webhook". For example if you are using docker-compose your
-  URL could look like this: `http://categorizer:3000/webhook`
-- Click "Submit"
+## Set up the Firefly III webhook
 
-![Step 1](docs/img/webhook1.png)
-![Step 2](docs/img/webhook2.png)
-![Step 3](docs/img/webhook3.png)
+1. Log in to Firefly III → Automation → Webhooks → Create new webhook
+2. **Title**: AI Categorizer
+3. **Trigger**: After transaction creation
+4. **Response**: Transaction details
+5. **Delivery**: JSON
+6. **URL**: `http://categorizer:3000/webhook` (or wherever this runs)
 
-Now you are ready and every new withdrawal transaction should be automatically categorized by OpenAI.
+## Environment variables
 
-## User Interface
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `FIREFLY_URL` | Yes | — | URL to your Firefly III instance |
+| `FIREFLY_PERSONAL_TOKEN` | Yes | — | Firefly III Personal Access Token |
+| `OPENAI_API_KEY` | Yes | — | OpenAI API key (or compatible provider) |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | Model to use |
+| `OPENAI_BASE_URL` | No | — | Custom base URL for OpenAI-compatible APIs |
+| `TAG_PREFIX` | No | `ai` | Prefix for tags (produces `ai:classified`, etc.) |
+| `ENABLE_UI` | No | `false` | Enable the web UI for monitoring |
+| `PORT` | No | `3000` | Port to listen on |
 
-The application comes with a minimal UI that allows you to monitor the classification queue and see the OpenAI prompts
-and responses. This UI is disabled by default.
+## Why three outcomes?
 
-To enable this UI set the environment variable `ENABLE_UI` to `true`.
+Most AI categorizers are binary: they either guess a category or do nothing. This creates a trust problem — you don't know when the AI was confident and when it was just guessing.
 
-After a restart of the application the UI can be accessed at `http://localhost:3000/` (or any other URL that allows you
-to reach the container).
+The three-outcome model (from [OpenAccountants' tax classification methodology](https://github.com/openaccountants/openaccountants)) makes the AI's confidence visible:
 
-## Adjust Tag name
+- **Classified**: high confidence, no action needed
+- **Assumed**: medium confidence with a disclosed assumption — review when you have time
+- **Needs Review**: low confidence — the AI didn't guess, it asked for help
 
-The application automatically sets the tag "AI categorized" on every transaction that was processed and a category could
-be guessed.
+You can filter transactions by tag in Firefly III to review only the ones that need attention.
 
-You can configure the name of this tag by setting the environment variable `FIREFLY_TAG` accordingly.
+## Privacy
 
-## Running on a different port
+Transaction details (description, destination, amount) are sent to the configured LLM provider. If privacy is a concern, use a local model via `OPENAI_BASE_URL` (e.g., Ollama).
 
-If you have to run the application on a different port than the default port `3000` set the environment variable `PORT`.
+## License
 
-## Full list of environment variables
+AGPL-3.0 (same as the original).
 
-- `FIREFLY_URL`: The URL to your Firefly III instance. Example: `https://firefly.example.com`. (required)
-- `FIREFLY_PERSONAL_TOKEN`: A Firefly III Personal Access Token. (required)
-- `OPENAI_API_KEY`: The OpenAI API Key to authenticate against OpenAI. (required)
-- `ENABLE_UI`: If the user interface should be enabled. (Default: `false`)
-- `FIREFLY_TAG`: The tag to assign to the processed transactions. (Default: `AI categorized`)
-- `PORT`: The port where the application listens. (Default: `3000`)
+## Credits
+
+- Original project by [bahuma20](https://github.com/bahuma20/firefly-iii-ai-categorize)
+- Three-outcome classification model by [OpenAccountants](https://github.com/openaccountants/openaccountants)

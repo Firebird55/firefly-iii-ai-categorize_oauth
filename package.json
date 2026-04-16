@@ -1,20 +1,20 @@
 {
   "name": "firefly-iii-ai-categorize",
-  "version": "1.0.0",
-  "description": "",
+  "version": "2.0.0",
+  "description": "Three-outcome AI transaction classifier for Firefly III, inspired by OpenAccountants",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "OpenAccountants (fork of bahuma20/firefly-iii-ai-categorize)",
+  "license": "AGPL-3.0",
   "dependencies": {
-    "express": "^4.18.2",
-    "openai": "^3.2.1",
+    "express": "^5.1.0",
+    "openai": "^4.86.2",
     "queue": "^7.0.0",
-    "socket.io": "^4.6.1",
-    "uuid": "^9.0.0"
+    "socket.io": "^4.8.1",
+    "uuid": "^11.1.0"
   }
 }
