@@ -328,6 +328,11 @@
       gap: 12px;
     }
 
+    .jobs-toolbar-main {
+      display: grid;
+      gap: 10px;
+    }
+
     .jobs-toolbar-copy {
       display: grid;
       gap: 4px;
@@ -342,7 +347,33 @@
       line-height: 1.4;
     }
 
+    .jobs-toolbar-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .jobs-filter {
+      min-height: auto;
+      padding: 8px 12px;
+      border-radius: 999px;
+    }
+
+    .jobs-filter.active {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .jobs-filter .count {
+      opacity: 0.72;
+      font-weight: 700;
+    }
+
     .jobs-toolbar .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
       margin-left: auto;
     }
 
@@ -686,6 +717,12 @@
   <script>
     const DEFAULT_VISIBLE_JOB_COUNT = 100;
     const JOB_RENDER_INCREMENT = 100;
+    const JOB_FILTERS = Object.freeze({
+      ALL: "all",
+      NON_QUEUED: "non_queued",
+      FINISHED: "finished",
+      FAILED: "failed",
+    });
 
     const state = {
       jobs: [],
@@ -713,6 +750,7 @@
     let pendingStats = null;
     let pendingSettings = null;
     let visibleJobCount = DEFAULT_VISIBLE_JOB_COUNT;
+    let activeJobFilter = JOB_FILTERS.NON_QUEUED;
     let isBackfillRequestActive = false;
     let renderFrame = null;
     let renderNeedsScrollAnchor = false;
@@ -819,6 +857,16 @@
         return;
       }
 
+      if (button.dataset.action === "set-job-filter") {
+        const nextFilter = normalizeJobFilter(button.dataset.filter);
+        if (nextFilter !== activeJobFilter) {
+          activeJobFilter = nextFilter;
+          visibleJobCount = DEFAULT_VISIBLE_JOB_COUNT;
+          scheduleRender({ preserveScroll: true });
+        }
+        return;
+      }
+
       if (button.dataset.action === "resume-live-updates") {
         flushPendingLiveUpdates({ preserveScroll: true });
         return;
@@ -876,13 +924,15 @@
         return;
       }
 
+      const stampedJob = stampLiveJobActivity(job);
+
       if (shouldHoldLiveUpdates()) {
-        pendingLiveJobs.set(job.id, job);
+        pendingLiveJobs.set(stampedJob.id, stampedJob);
         renderJobsToolbar();
         return;
       }
 
-      upsertJob(job);
+      upsertJob(stampedJob);
       state.queue = summarizeJobs(state.jobs);
       scheduleRender();
     }
@@ -1132,7 +1182,10 @@
     }
 
     function setJobsCollection(jobs) {
-      state.jobs = [...jobs].sort((left, right) => new Date(right.created) - new Date(left.created));
+      const previousJobsById = new Map(state.jobs.map((job) => [job.id, job]));
+      state.jobs = [...jobs]
+        .map((job) => preserveJobActivity(job, previousJobsById.get(job.id)))
+        .sort(compareJobsForDisplay);
       state.queue = summarizeJobs(state.jobs);
       visibleJobCount = Math.max(DEFAULT_VISIBLE_JOB_COUNT, visibleJobCount);
       renderJobsToolbar();
@@ -1140,19 +1193,71 @@
 
     function upsertJob(job) {
       const existingIndex = state.jobs.findIndex((entry) => entry.id === job.id);
+      const existingJob = existingIndex >= 0 ? state.jobs[existingIndex] : null;
+      const normalizedJob = preserveJobActivity(job, existingJob);
+
       if (existingIndex >= 0) {
-        state.jobs[existingIndex] = job;
-        return;
+        state.jobs.splice(existingIndex, 1);
       }
 
-      const createdTime = new Date(job.created).getTime();
-      const insertIndex = state.jobs.findIndex((entry) => new Date(entry.created).getTime() < createdTime);
+      const insertIndex = state.jobs.findIndex((entry) => compareJobsForDisplay(normalizedJob, entry) < 0);
       if (insertIndex === -1) {
-        state.jobs.push(job);
+        state.jobs.push(normalizedJob);
         return;
       }
 
-      state.jobs.splice(insertIndex, 0, job);
+      state.jobs.splice(insertIndex, 0, normalizedJob);
+    }
+
+    function preserveJobActivity(job, previousJob = null) {
+      const nextJob = { ...job };
+      if (previousJob?.activityAt) {
+        nextJob.activityAt = previousJob.activityAt;
+      } else if (job.updated) {
+        nextJob.activityAt = job.updated;
+      }
+      return nextJob;
+    }
+
+    function stampLiveJobActivity(job) {
+      return {
+        ...job,
+        activityAt: new Date().toISOString(),
+      };
+    }
+
+    function compareJobsForDisplay(left, right) {
+      const statusDelta = jobStatusPriority(left?.status) - jobStatusPriority(right?.status);
+      if (statusDelta !== 0) {
+        return statusDelta;
+      }
+
+      const activityDelta = getJobActivityTime(right) - getJobActivityTime(left);
+      if (activityDelta !== 0) {
+        return activityDelta;
+      }
+
+      return getJobCreatedTime(right) - getJobCreatedTime(left);
+    }
+
+    function jobStatusPriority(status) {
+      if (status === "in_progress") return 0;
+      if (status === "failed") return 1;
+      if (status === "finished") return 2;
+      return 3;
+    }
+
+    function getJobActivityTime(job) {
+      return safeTimestamp(job?.activityAt ?? job?.updated ?? job?.created);
+    }
+
+    function getJobCreatedTime(job) {
+      return safeTimestamp(job?.created);
+    }
+
+    function safeTimestamp(value) {
+      const parsed = new Date(value ?? 0).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
     }
 
     function captureScrollAnchor() {
@@ -1347,14 +1452,21 @@
     }
 
     function renderJobsToolbar() {
-      const totalJobs = state.jobs.length;
+      const filteredJobs = getFilteredJobs();
+      const totalJobs = filteredJobs.length;
+      const allJobs = state.jobs.length;
       const shownJobs = Math.min(totalJobs, visibleJobCount);
       const hiddenJobs = Math.max(totalJobs - shownJobs, 0);
       const pendingUpdates = pendingLiveUpdateCount();
       const workers = state.settings.queueConcurrency || 1;
+      const filterLabel = getJobFilterLabel(activeJobFilter);
 
-      let summary = `Showing ${formatNumber(shownJobs)} of ${formatNumber(totalJobs)} job(s)`;
-      let detail = `${formatNumber(state.queue.queued || 0)} queued · ${formatNumber(state.queue.inProgress || 0)} running · ${formatNumber(workers)} worker(s)`;
+      let summary = activeJobFilter === JOB_FILTERS.ALL
+        ? `Showing ${formatNumber(shownJobs)} of ${formatNumber(totalJobs)} job(s)`
+        : `Showing ${formatNumber(shownJobs)} of ${formatNumber(totalJobs)} ${filterLabel.toLowerCase()} job(s)`;
+      let detail = activeJobFilter === JOB_FILTERS.ALL
+        ? `${formatNumber(state.queue.queued || 0)} queued · ${formatNumber(state.queue.inProgress || 0)} running · ${formatNumber(workers)} worker(s)`
+        : `${formatNumber(allJobs)} total · ${formatNumber(state.queue.queued || 0)} queued · ${formatNumber(state.queue.inProgress || 0)} running · ${formatNumber(state.queue.finished || 0)} finished · ${formatNumber(state.queue.failed || 0)} failed`;
 
       if (isBackfillRequestActive) {
         detail = "Large backfill is queueing now. Live updates are being buffered so the view stays stable.";
@@ -1365,9 +1477,17 @@
       }
 
       jobsToolbar.innerHTML = `
-        <div class="jobs-toolbar-copy">
-          <strong>${escapeHtml(summary)}</strong>
-          <span>${escapeHtml(detail)}</span>
+        <div class="jobs-toolbar-main">
+          <div class="jobs-toolbar-copy">
+            <strong>${escapeHtml(summary)}</strong>
+            <span>${escapeHtml(detail)}</span>
+          </div>
+          <div class="jobs-toolbar-filters" role="toolbar" aria-label="Job filters">
+            ${renderJobFilterButton(JOB_FILTERS.NON_QUEUED, "Not queued")}
+            ${renderJobFilterButton(JOB_FILTERS.FINISHED, "Finished")}
+            ${renderJobFilterButton(JOB_FILTERS.FAILED, "Failed")}
+            ${renderJobFilterButton(JOB_FILTERS.ALL, "All")}
+          </div>
         </div>
         <div class="actions">
           ${hiddenJobs > 0 ? `
@@ -1385,10 +1505,13 @@
     }
 
     function renderJobs() {
-      const jobs = state.jobs.slice(0, visibleJobCount);
+      const jobs = getFilteredJobs().slice(0, visibleJobCount);
 
       if (jobs.length === 0) {
-        jobsMount.innerHTML = `<div class="empty">No jobs yet. New webhook transactions and queued backfills will show up here.</div>`;
+        const emptyMessage = activeJobFilter === JOB_FILTERS.ALL
+          ? "No jobs yet. New webhook transactions and queued backfills will show up here."
+          : `No ${getJobFilterLabel(activeJobFilter).toLowerCase()} jobs yet.`;
+        jobsMount.innerHTML = `<div class="empty">${escapeHtml(emptyMessage)}</div>`;
         return;
       }
 
@@ -1417,6 +1540,7 @@
           <div class="job-meta">
             <span>${escapeHtml(formatDateTime(job.created))}</span>
             ${job.data?.date ? `<span>${escapeHtml(formatDate(job.data.date))}</span>` : ""}
+            ${getJobActivityTime(job) > getJobCreatedTime(job) ? `<span>Last change ${escapeHtml(formatDateTime(job.activityAt || job.updated))}</span>` : ""}
             ${job.error ? `<span>${escapeHtml(job.error)}</span>` : ""}
           </div>
 
@@ -1510,6 +1634,60 @@
           ` : ""}
         </article>
       `;
+    }
+
+    function renderJobFilterButton(filter, label) {
+      const active = filter === activeJobFilter;
+      const count = countJobsForFilter(filter);
+      return `
+        <button
+          type="button"
+          class="${active ? "primary" : "secondary"} jobs-filter${active ? " active" : ""}"
+          data-action="set-job-filter"
+          data-filter="${escapeAttribute(filter)}"
+        >
+          ${escapeHtml(label)} <span class="count">${escapeHtml(formatNumber(count))}</span>
+        </button>
+      `;
+    }
+
+    function getFilteredJobs() {
+      return state.jobs.filter((job) => matchesJobFilter(job, activeJobFilter));
+    }
+
+    function countJobsForFilter(filter) {
+      return state.jobs.reduce((count, job) => count + (matchesJobFilter(job, filter) ? 1 : 0), 0);
+    }
+
+    function matchesJobFilter(job, filter) {
+      if (filter === JOB_FILTERS.NON_QUEUED) {
+        return job?.status !== "queued";
+      }
+
+      if (filter === JOB_FILTERS.FINISHED) {
+        return job?.status === "finished";
+      }
+
+      if (filter === JOB_FILTERS.FAILED) {
+        return job?.status === "failed";
+      }
+
+      return true;
+    }
+
+    function normalizeJobFilter(value) {
+      if (value === JOB_FILTERS.NON_QUEUED || value === JOB_FILTERS.FINISHED || value === JOB_FILTERS.FAILED) {
+        return value;
+      }
+
+      return JOB_FILTERS.ALL;
+    }
+
+    function getJobFilterLabel(filter) {
+      if (filter === JOB_FILTERS.NON_QUEUED) return "Not queued";
+      if (filter === JOB_FILTERS.FINISHED) return "Finished";
+      if (filter === JOB_FILTERS.FAILED) return "Failed";
+      return "All";
     }
 
     function renderMetaChip(label, value) {
