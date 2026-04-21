@@ -305,6 +305,46 @@
       margin-bottom: 6px;
     }
 
+    .jobs-shell {
+      display: grid;
+      gap: 14px;
+    }
+
+    .jobs-toolbar {
+      min-height: 76px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .jobs-toolbar-copy {
+      display: grid;
+      gap: 4px;
+    }
+
+    .jobs-toolbar-copy strong {
+      font-size: 0.98rem;
+    }
+
+    .jobs-toolbar-copy span {
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .jobs-toolbar .actions {
+      margin-left: auto;
+    }
+
+    .jobs-toolbar button {
+      padding: 10px 14px;
+    }
+
     .jobs {
       grid-template-columns: 1fr;
     }
@@ -608,12 +648,18 @@
           <p>The list below is live. Finished and failed jobs stay visible until the service restarts.</p>
         </div>
       </div>
-      <div class="jobs" id="jobs"></div>
+      <div class="jobs-shell">
+        <div class="jobs-toolbar" id="jobs-toolbar"></div>
+        <div class="jobs" id="jobs"></div>
+      </div>
     </section>
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    const DEFAULT_VISIBLE_JOB_COUNT = 100;
+    const JOB_RENDER_INCREMENT = 100;
+
     const state = {
       jobs: [],
       stats: {
@@ -636,10 +682,18 @@
     };
     const reevaluationDrafts = new Map();
     const pendingReevaluations = new Set();
+    const pendingLiveJobs = new Map();
+    let pendingStats = null;
+    let pendingSettings = null;
+    let visibleJobCount = DEFAULT_VISIBLE_JOB_COUNT;
+    let isBackfillRequestActive = false;
+    let renderFrame = null;
+    let renderNeedsScrollAnchor = false;
 
     const socket = io();
     const metaRow = document.getElementById("meta-row");
     const overviewCards = document.getElementById("overview-cards");
+    const jobsToolbar = document.getElementById("jobs-toolbar");
     const jobsMount = document.getElementById("jobs");
     const backfillSummary = document.getElementById("backfill-summary");
     const backfillNote = document.getElementById("backfill-note");
@@ -663,49 +717,30 @@
     }
 
     socket.on("jobs", (jobs) => {
-      renderWithScrollAnchor(() => {
-        state.jobs = jobs;
-        state.queue = summarizeJobs(jobs);
-        render();
-      });
+      setJobsCollection(jobs || []);
+      scheduleRender();
     });
 
     socket.on("job created", (payload) => {
-      renderWithScrollAnchor(() => {
-        state.jobs = payload.jobs;
-        state.queue = summarizeJobs(payload.jobs);
-        render();
-      });
+      handleLiveJobUpdate(payload?.job);
     });
 
     socket.on("job updated", (payload) => {
-      renderWithScrollAnchor(() => {
-        state.jobs = payload.jobs;
-        state.queue = summarizeJobs(payload.jobs);
-        render();
-      });
+      handleLiveJobUpdate(payload?.job);
     });
 
     socket.on("stats updated", (stats) => {
-      renderWithScrollAnchor(() => {
-        state.stats = stats;
-        render();
-      });
+      handleLiveStatsUpdate(stats);
     });
 
     socket.on("settings updated", (settings) => {
-      renderWithScrollAnchor(() => {
-        state.settings = settings;
-        syncModelControls();
-        syncBackfillControls();
-        render();
-      });
+      handleLiveSettingsUpdate(settings);
     });
 
     async function refreshState() {
       const response = await fetch("/api/state");
       const payload = await response.json();
-      state.jobs = payload.jobs || [];
+      setJobsCollection(payload.jobs || []);
       state.stats = payload.stats || state.stats;
       state.queue = payload.queue || summarizeJobs(state.jobs);
       state.settings = payload.settings || {};
@@ -724,6 +759,8 @@
       scopeSelect.addEventListener("change", syncBackfillControls);
       jobsMount.addEventListener("input", onJobsInput);
       jobsMount.addEventListener("click", onJobsClick);
+      jobsToolbar.addEventListener("click", onJobsClick);
+      window.addEventListener("scroll", onWindowScroll, { passive: true });
     }
 
     function onJobsInput(event) {
@@ -736,8 +773,23 @@
     }
 
     async function onJobsClick(event) {
-      const button = event.target.closest('button[data-action="reevaluate"]');
+      const button = event.target.closest("button[data-action]");
       if (!button) {
+        return;
+      }
+
+      if (button.dataset.action === "show-more-jobs") {
+        visibleJobCount += JOB_RENDER_INCREMENT;
+        scheduleRender({ preserveScroll: true });
+        return;
+      }
+
+      if (button.dataset.action === "resume-live-updates") {
+        flushPendingLiveUpdates({ preserveScroll: true });
+        return;
+      }
+
+      if (button.dataset.action !== "reevaluate") {
         return;
       }
 
@@ -749,7 +801,7 @@
       }
 
       pendingReevaluations.add(jobId);
-      renderWithScrollAnchor(() => render());
+      scheduleRender({ preserveScroll: true });
 
       try {
         const response = await fetch("/api/reevaluate", {
@@ -772,13 +824,63 @@
         setBackfillMessage(error.message, "error");
       } finally {
         pendingReevaluations.delete(jobId);
-        renderWithScrollAnchor(() => render());
+        scheduleRender({ preserveScroll: true });
       }
+    }
+
+    function onWindowScroll() {
+      if (!hasPendingLiveUpdates() || shouldHoldLiveUpdates()) {
+        return;
+      }
+
+      flushPendingLiveUpdates({ preserveScroll: false });
+    }
+
+    function handleLiveJobUpdate(job) {
+      if (!job?.id) {
+        return;
+      }
+
+      if (shouldHoldLiveUpdates()) {
+        pendingLiveJobs.set(job.id, job);
+        renderJobsToolbar();
+        return;
+      }
+
+      upsertJob(job);
+      state.queue = summarizeJobs(state.jobs);
+      scheduleRender();
+    }
+
+    function handleLiveStatsUpdate(stats) {
+      if (shouldHoldLiveUpdates()) {
+        pendingStats = stats;
+        renderJobsToolbar();
+        return;
+      }
+
+      state.stats = stats;
+      scheduleRender();
+    }
+
+    function handleLiveSettingsUpdate(settings) {
+      if (shouldHoldLiveUpdates()) {
+        pendingSettings = settings;
+        renderJobsToolbar();
+        return;
+      }
+
+      state.settings = settings;
+      syncModelControls();
+      syncBackfillControls();
+      scheduleRender();
     }
 
     async function runBackfill(dryRun) {
       const scope = scopeSelect.value || "uncategorized";
       const scopeLabel = formatScope(scope);
+      isBackfillRequestActive = !dryRun;
+      renderJobsToolbar();
       setButtonsDisabled(true);
       setBackfillMessage(dryRun
         ? `Previewing ${scopeLabel.toLowerCase()}. This does not queue any jobs.`
@@ -805,9 +907,17 @@
         }
 
         await refreshState();
+        isBackfillRequestActive = false;
+        if (hasPendingLiveUpdates() && !shouldHoldLiveUpdates()) {
+          flushPendingLiveUpdates({ preserveScroll: true });
+        } else {
+          renderJobsToolbar();
+        }
         setBackfillMessage(buildBackfillResultMessage(payload, scopeLabel));
-        render();
+        scheduleRender({ preserveScroll: true });
       } catch (error) {
+        isBackfillRequestActive = false;
+        renderJobsToolbar();
         setBackfillMessage(error.message, "error");
       } finally {
         setButtonsDisabled(false);
@@ -849,7 +959,7 @@
         state.settings = payload.settings || state.settings;
         syncModelControls();
         setModelMessage(payload.message || "Model updated.");
-        render();
+        scheduleRender({ preserveScroll: true });
       } catch (error) {
         setModelMessage(error.message, "error");
       } finally {
@@ -872,15 +982,97 @@
       backfillNote.textContent = message;
     }
 
-    function renderWithScrollAnchor(renderFn) {
-      const anchor = captureScrollAnchor();
-      renderFn();
-
-      if (!anchor) {
+    function scheduleRender({ preserveScroll = false } = {}) {
+      renderNeedsScrollAnchor = renderNeedsScrollAnchor || preserveScroll;
+      if (renderFrame !== null) {
         return;
       }
 
-      requestAnimationFrame(() => restoreScrollAnchor(anchor));
+      renderFrame = requestAnimationFrame(() => {
+        const anchor = renderNeedsScrollAnchor ? captureScrollAnchor() : null;
+        renderFrame = null;
+        renderNeedsScrollAnchor = false;
+        render();
+
+        if (!anchor) {
+          return;
+        }
+
+        requestAnimationFrame(() => restoreScrollAnchor(anchor));
+      });
+    }
+
+    function hasPendingLiveUpdates() {
+      return pendingLiveJobs.size > 0 || pendingStats !== null || pendingSettings !== null;
+    }
+
+    function pendingLiveUpdateCount() {
+      let count = pendingLiveJobs.size;
+      if (pendingStats !== null) count += 1;
+      if (pendingSettings !== null) count += 1;
+      return count;
+    }
+
+    function shouldHoldLiveUpdates() {
+      if (isBackfillRequestActive) {
+        return true;
+      }
+
+      const activeElement = document.activeElement;
+      if (activeElement && jobsMount.contains(activeElement)) {
+        return true;
+      }
+
+      return window.scrollY > 140;
+    }
+
+    function flushPendingLiveUpdates({ preserveScroll = true } = {}) {
+      if (pendingSettings !== null) {
+        state.settings = pendingSettings;
+        pendingSettings = null;
+        syncModelControls();
+        syncBackfillControls();
+      }
+
+      if (pendingStats !== null) {
+        state.stats = pendingStats;
+        pendingStats = null;
+      }
+
+      if (pendingLiveJobs.size > 0) {
+        for (const job of pendingLiveJobs.values()) {
+          upsertJob(job);
+        }
+        pendingLiveJobs.clear();
+        state.queue = summarizeJobs(state.jobs);
+      }
+
+      renderJobsToolbar();
+      scheduleRender({ preserveScroll });
+    }
+
+    function setJobsCollection(jobs) {
+      state.jobs = [...jobs].sort((left, right) => new Date(right.created) - new Date(left.created));
+      state.queue = summarizeJobs(state.jobs);
+      visibleJobCount = Math.max(DEFAULT_VISIBLE_JOB_COUNT, visibleJobCount);
+      renderJobsToolbar();
+    }
+
+    function upsertJob(job) {
+      const existingIndex = state.jobs.findIndex((entry) => entry.id === job.id);
+      if (existingIndex >= 0) {
+        state.jobs[existingIndex] = job;
+        return;
+      }
+
+      const createdTime = new Date(job.created).getTime();
+      const insertIndex = state.jobs.findIndex((entry) => new Date(entry.created).getTime() < createdTime);
+      if (insertIndex === -1) {
+        state.jobs.push(job);
+        return;
+      }
+
+      state.jobs.splice(insertIndex, 0, job);
     }
 
     function captureScrollAnchor() {
@@ -924,6 +1116,7 @@
       renderModelSummary();
       renderOverview();
       renderBackfill();
+      renderJobsToolbar();
       renderJobs();
     }
 
@@ -932,6 +1125,7 @@
         renderMetaChip("Model", escapeHtml(state.settings.currentModel || "Unknown")),
         renderMetaChip("Auth Mode", escapeHtml(state.settings.authMode || "Unknown")),
         renderMetaChip("UI", state.settings.uiEnabled ? "Enabled" : "Disabled"),
+        renderMetaChip("Workers", formatNumber(state.settings.queueConcurrency || 1)),
         renderMetaChip("Tag Prefix", escapeHtml(state.settings.tagPrefix || "ai")),
         renderMetaChip("State File", escapeHtml(state.settings.appStateFile || "/data/state/app-state.json"))
       ].join("");
@@ -1042,8 +1236,46 @@
       `;
     }
 
+    function renderJobsToolbar() {
+      const totalJobs = state.jobs.length;
+      const shownJobs = Math.min(totalJobs, visibleJobCount);
+      const hiddenJobs = Math.max(totalJobs - shownJobs, 0);
+      const pendingUpdates = pendingLiveUpdateCount();
+      const workers = state.settings.queueConcurrency || 1;
+
+      let summary = `Showing ${formatNumber(shownJobs)} of ${formatNumber(totalJobs)} job(s)`;
+      let detail = `${formatNumber(state.queue.queued || 0)} queued · ${formatNumber(state.queue.inProgress || 0)} running · ${formatNumber(workers)} worker(s)`;
+
+      if (isBackfillRequestActive) {
+        detail = "Large backfill is queueing now. Live updates are being buffered so the view stays stable.";
+      } else if (pendingUpdates > 0) {
+        detail = `${formatNumber(pendingUpdates)} live update(s) waiting so the list does not jump while you are reading it.`;
+      } else if (hiddenJobs > 0) {
+        detail = `${formatNumber(hiddenJobs)} older job(s) hidden for performance. Use Show more if you want to load a bigger slice.`;
+      }
+
+      jobsToolbar.innerHTML = `
+        <div class="jobs-toolbar-copy">
+          <strong>${escapeHtml(summary)}</strong>
+          <span>${escapeHtml(detail)}</span>
+        </div>
+        <div class="actions">
+          ${hiddenJobs > 0 ? `
+            <button type="button" class="secondary" data-action="show-more-jobs">
+              Show ${escapeHtml(formatNumber(Math.min(JOB_RENDER_INCREMENT, hiddenJobs)))} more
+            </button>
+          ` : ""}
+          ${pendingUpdates > 0 && !isBackfillRequestActive ? `
+            <button type="button" class="primary" data-action="resume-live-updates">
+              Apply ${escapeHtml(formatNumber(pendingUpdates))} live update(s)
+            </button>
+          ` : ""}
+        </div>
+      `;
+    }
+
     function renderJobs() {
-      const jobs = [...state.jobs].sort((a, b) => new Date(b.created) - new Date(a.created));
+      const jobs = state.jobs.slice(0, visibleJobCount);
 
       if (jobs.length === 0) {
         jobsMount.innerHTML = `<div class="empty">No jobs yet. New webhook transactions and queued backfills will show up here.</div>`;

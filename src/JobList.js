@@ -65,6 +65,6 @@ export default class JobList {
   }
 
   #emit(event, job) {
-    this.#eventEmitter.emit(event, { job, jobs: Array.from(this.#jobs.values()) });
+    this.#eventEmitter.emit(event, { job });
   }
 }

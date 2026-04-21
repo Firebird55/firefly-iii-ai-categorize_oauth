@@ -18,6 +18,7 @@ export default class App {
   #BACKFILL_DEFAULT_MAX_TRANSACTIONS;
   #BACKFILL_MAX_TRANSACTIONS;
   #BACKFILL_PAGE_SIZE;
+  #QUEUE_CONCURRENCY;
 
   #firefly;
   #classifier;
@@ -41,6 +42,7 @@ export default class App {
     );
     this.#BACKFILL_MAX_TRANSACTIONS = parseIntegerEnv("BACKFILL_MAX_TRANSACTIONS", 1000);
     this.#BACKFILL_PAGE_SIZE = parseIntegerEnv("BACKFILL_PAGE_SIZE", 100);
+    this.#QUEUE_CONCURRENCY = parseIntegerEnv("QUEUE_CONCURRENCY", 4);
   }
 
   async run() {
@@ -52,7 +54,7 @@ export default class App {
 
     this.#queue = new Queue({
       timeout: 60 * 1000,
-      concurrency: 1,
+      concurrency: this.#QUEUE_CONCURRENCY,
       autostart: true,
     });
 
@@ -88,6 +90,7 @@ export default class App {
       console.log("Three-outcome model: CLASSIFIED | ASSUMED | NEEDS_REVIEW");
       console.log(`UI ${this.#ENABLE_UI ? "enabled" : "disabled"}`);
       console.log(`Backfill max transactions: ${this.#BACKFILL_MAX_TRANSACTIONS}`);
+      console.log(`Queue concurrency: ${this.#QUEUE_CONCURRENCY}`);
       console.log(`State file: ${this.#APP_STATE_FILE}`);
     });
 
@@ -531,6 +534,7 @@ export default class App {
         backfillDefaultMaxTransactions: this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS,
         backfillMaxTransactions: this.#BACKFILL_MAX_TRANSACTIONS,
         backfillPageSize: this.#BACKFILL_PAGE_SIZE,
+        queueConcurrency: this.#QUEUE_CONCURRENCY,
       },
     };
   }

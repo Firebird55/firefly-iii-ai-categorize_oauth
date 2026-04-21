@@ -193,6 +193,7 @@ npm start
 | `BACKFILL_DEFAULT_MAX_TRANSACTIONS` | No | `100` | Default max transactions shown in the UI backfill form |
 | `BACKFILL_MAX_TRANSACTIONS` | No | `1000` | Hard cap for a single backfill request |
 | `BACKFILL_PAGE_SIZE` | No | `100` | Firefly API page size used during historical scans |
+| `QUEUE_CONCURRENCY` | No | `4` | Number of categorization workers that may run in parallel |
 | `PORT` | No | `3000` | Port to listen on |
 
 ## Historical backfill and reevaluation
@@ -209,7 +210,7 @@ If you want to classify older records too, open the built-in UI and use the **Hi
 4. Run a preview first.
 5. If the preview looks right, queue the scan.
 
-Backfill scans Firefly III withdrawals through the API, skips transactions that are already categorized, and skips already tagged transactions unless you opt in. Reevaluation mode instead targets transactions already tagged with `ai:assumed` and/or `ai:needs-review`, replaces the old AI outcome tag with the new one, and can clear a previously assumed category if the new result is `NEEDS_REVIEW`. Both flows add jobs to the same single-file queue used for live webhook work.
+Backfill scans Firefly III withdrawals through the API, skips transactions that are already categorized, and skips already tagged transactions unless you opt in. Reevaluation mode instead targets transactions already tagged with `ai:assumed` and/or `ai:needs-review`, replaces the old AI outcome tag with the new one, and can clear a previously assumed category if the new result is `NEEDS_REVIEW`. Both flows add jobs to the same live worker queue used for webhook traffic, and that queue can process multiple jobs in parallel through `QUEUE_CONCURRENCY`.
 
 ## Usage dashboard
 
@@ -223,6 +224,7 @@ When the UI is enabled, `http://localhost:3202` shows:
 - estimated cost when the model/provider reports usage
 - recent scan runs and sample candidates
 - direct links to open each transaction in Firefly III
+- a buffered jobs feed that shows the latest slice first, lets you reveal older entries on demand, and pauses live inserts while you are browsing lower on the page
 
 These totals are stored locally in `APP_STATE_FILE` and survive container restarts when the `./data` volume is mounted.
 
