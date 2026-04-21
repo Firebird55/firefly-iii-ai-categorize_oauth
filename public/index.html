@@ -166,6 +166,11 @@
       align-items: start;
     }
 
+    .history-layout {
+      display: grid;
+      gap: 18px;
+    }
+
     form {
       display: grid;
       gap: 14px;
@@ -278,11 +283,19 @@
       gap: 10px;
     }
 
+    .summary-grid.metrics-grid {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
     .summary-item {
       padding: 12px 14px;
       border-radius: 14px;
       border: 1px solid var(--line);
       background: var(--panel-strong);
+    }
+
+    .summary-item.full-width {
+      grid-column: 1 / -1;
     }
 
     .summary-item span {
@@ -417,6 +430,16 @@
       letter-spacing: 0.08em;
     }
 
+    .amount-cell {
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .numeric {
+      font-variant-numeric: tabular-nums;
+    }
+
     .muted {
       color: var(--muted);
     }
@@ -509,7 +532,7 @@
           <p>Preview is the safe first step. You can scan uncategorized withdrawals or specifically reevaluate `ai:assumed` and `ai:needs-review` entries with a different model.</p>
         </div>
       </div>
-      <div class="split">
+      <div class="history-layout">
         <form id="backfill-form">
           <div class="form-grid">
             <label>
@@ -698,8 +721,7 @@
         }
 
         await refreshState();
-        const action = dryRun ? "Preview finished." : "Backfill queued.";
-        setBackfillMessage(`${action} Inspected ${payload.inspected} groups and found ${payload.queueableCandidates} queueable ${scopeLabel.toLowerCase()} candidate(s).`);
+        setBackfillMessage(buildBackfillResultMessage(payload, scopeLabel));
         render();
       } catch (error) {
         setBackfillMessage(error.message, "error");
@@ -842,7 +864,7 @@
                 <th>Outcome</th>
                 <th>Date</th>
                 <th>Destination</th>
-                <th>Amount</th>
+                <th class="amount-cell">Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -852,7 +874,7 @@
                   <td>${escapeHtml(formatOutcome(candidate.currentOutcome))}</td>
                   <td>${escapeHtml(formatDate(candidate.date))}</td>
                   <td>${escapeHtml(candidate.destinationName || candidate.description || "")}</td>
-                  <td>${escapeHtml(candidate.amount == null ? "" : String(candidate.amount))}</td>
+                  <td class="amount-cell">${escapeHtml(formatAmount(candidate.amount))}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -860,7 +882,7 @@
         : `<div class="empty">No sample candidates were recorded for this run.</div>`;
 
       backfillSummary.innerHTML = `
-        <div class="summary-grid">
+        <div class="summary-grid metrics-grid">
           <div class="summary-item">
             <span>Last Run</span>
             <strong>${escapeHtml(run.mode === "preview" ? "Preview" : "Queued Backfill")}</strong>
@@ -869,14 +891,14 @@
           <div class="summary-item">
             <span>Scope</span>
             <strong>${formatNumber(run.inspected || 0)} inspected</strong>
-            <div class="muted">${formatNumber(run.queueableCandidates || 0)} queueable · ${formatNumber(run.duplicateOpenJobs || 0)} already open</div>
+            <div class="muted">${escapeHtml(formatBackfillScopeSummary(run))}</div>
           </div>
           <div class="summary-item">
-            <span>Queued</span>
-            <strong>${formatNumber(run.queued || 0)} job(s)</strong>
-            <div class="muted">${escapeHtml(run.options?.model || "Active model")} · ${escapeHtml(run.stoppedBecause || "end-of-results")}</div>
+            <span>${escapeHtml(run.mode === "preview" ? "Would Queue" : "Queued")}</span>
+            <strong>${formatNumber(run.mode === "preview" ? run.queueableWithinLimit || 0 : run.queued || 0)} job(s)</strong>
+            <div class="muted">${escapeHtml(formatBackfillQueueSummary(run))}</div>
           </div>
-          <div class="summary-item">
+          <div class="summary-item full-width">
             <span>Sample Candidates</span>
             ${sampleRows}
           </div>
@@ -928,7 +950,7 @@
             </div>
             <div class="job-field">
               <strong>Amount</strong>
-              <div>${escapeHtml(job.data?.amount == null ? "—" : String(job.data.amount))}</div>
+              <div class="numeric">${escapeHtml(formatAmount(job.data?.amount))}</div>
             </div>
             <div class="job-field">
               <strong>Category</strong>
@@ -1014,6 +1036,9 @@
 
     function syncBackfillControls() {
       const reevaluationScope = updateBackfillCheckboxState();
+      previewButton.textContent = reevaluationScope ? "Preview reevaluation" : "Preview historical scan";
+      queueButton.textContent = reevaluationScope ? "Queue reevaluation" : "Queue historical backfill";
+
       if (previewButton.disabled || queueButton.disabled) {
         return;
       }
@@ -1082,6 +1107,22 @@
       return `<a class="inline-link" href="${escapeAttribute(transactionUrl)}" target="_blank" rel="noreferrer">${label}</a>`;
     }
 
+    function formatAmount(value) {
+      if (value == null || value === "") {
+        return "—";
+      }
+
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        return String(value);
+      }
+
+      return new Intl.NumberFormat(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(parsed);
+    }
+
     function formatNumber(value) {
       return Number(value || 0).toLocaleString();
     }
@@ -1108,6 +1149,48 @@
       return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium"
       }).format(new Date(value));
+    }
+
+    function formatBackfillScopeSummary(run) {
+      const queueableCandidates = Number(run.queueableCandidates || 0);
+      const queueableWithinLimit = Number(run.queueableWithinLimit || 0);
+      const duplicateOpenJobs = Number(run.duplicateOpenJobs || 0);
+
+      if (run.mode === "preview" && queueableCandidates > queueableWithinLimit) {
+        return `${formatNumber(queueableCandidates)} queueable total · ${formatNumber(queueableWithinLimit)} within current cap · ${formatNumber(duplicateOpenJobs)} already open`;
+      }
+
+      return `${formatNumber(queueableCandidates)} queueable · ${formatNumber(duplicateOpenJobs)} already open`;
+    }
+
+    function formatBackfillQueueSummary(run) {
+      const selectedModel = run.options?.model || "Active model";
+      if (run.mode === "preview") {
+        const remainingCandidates = Number(run.remainingCandidates || 0);
+        if (remainingCandidates > 0) {
+          return `${selectedModel} · ${formatNumber(remainingCandidates)} more outside current cap`;
+        }
+        return `${selectedModel} · current cap ${formatNumber(run.options?.maxTransactions || 0)}`;
+      }
+
+      return `${selectedModel} · ${run.stoppedBecause || "end-of-results"}`;
+    }
+
+    function buildBackfillResultMessage(payload, scopeLabel) {
+      const inspected = formatNumber(payload.inspected || 0);
+      const queueable = formatNumber(payload.queueableCandidates || 0);
+      const queueableWithinLimit = formatNumber(payload.queueableWithinLimit || 0);
+      const scopeText = scopeLabel.toLowerCase();
+
+      if (payload.mode === "preview" && Number(payload.remainingCandidates || 0) > 0) {
+        return `Preview finished. Inspected ${inspected} groups and found ${queueable} queueable ${scopeText} candidate(s). With the current max transactions setting, queueing would add ${queueableWithinLimit} job(s) at a time.`;
+      }
+
+      if (payload.mode === "preview") {
+        return `Preview finished. Inspected ${inspected} groups and found ${queueable} queueable ${scopeText} candidate(s).`;
+      }
+
+      return `Backfill queued. Inspected ${inspected} groups and queued ${formatNumber(payload.queued || 0)} ${scopeText} job(s).`;
     }
 
     function escapeHtml(value) {

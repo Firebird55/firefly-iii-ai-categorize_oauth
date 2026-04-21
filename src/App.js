@@ -393,10 +393,6 @@ export default class App {
         }
 
         if (options.dryRun) {
-          if (queueableCandidates >= options.maxTransactions) {
-            stoppedBecause = "max-transactions-reached";
-            break;
-          }
           continue;
         }
 
@@ -448,6 +444,8 @@ export default class App {
       inspected,
       eligibleCandidates,
       queueableCandidates,
+      queueableWithinLimit: Math.min(queueableCandidates, options.maxTransactions),
+      remainingCandidates: Math.max(queueableCandidates - options.maxTransactions, 0),
       queued,
       duplicateOpenJobs,
       skippedReasonCounts,
