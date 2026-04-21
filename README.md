@@ -25,6 +25,8 @@ The [original project](https://github.com/bahuma20/firefly-iii-ai-categorize) is
 - **Pagination** for categories (the original only fetched the first page).
 - **Richer health endpoint** at `GET /health` with readiness and auth-mode details.
 - **Failed job tracking** in the UI.
+- **Local usage tracking** in the UI with token totals and estimated cost.
+- **Historical backfill mode** with preview and queue actions for older uncategorized withdrawals.
 
 ## How it works
 
@@ -46,6 +48,25 @@ Firefly III webhook (new transaction)
 ```
 
 ## Quick start
+
+### Docker Compose beside an existing Firefly III stack
+
+This repo now includes its own `docker-compose.yml` so it can run as the main categorizer container outside your Firefly III repo while still attaching to the same Docker network.
+
+1. Start your main Firefly III stack first so the shared Docker network exists.
+2. Copy `.env.example` to `.env`.
+3. Put your Firefly III Personal Access Token in `.env.local` as `FIREFLY_PERSONAL_TOKEN=...`.
+4. Sign in with the Codex desktop app or Codex CLI on this machine.
+5. Run `.\scripts\import-codex-auth.ps1`.
+6. Run `docker compose up -d --build`.
+7. In Firefly III, create a webhook that posts to `http://firefly_iii_ai_categorizer:3000/webhook`.
+
+By default the container joins the `fireflyiii_firefly_iii` Docker network and reaches Firefly III at `http://firefly_iii_app:8080`. If your main stack uses a different network or service name, update `FIREFLY_DOCKER_NETWORK` and `FIREFLY_URL` before starting.
+
+Health endpoint and dashboard:
+
+- `http://localhost:3202/health`
+- `http://localhost:3202`
 
 ### Docker Compose with API key
 
@@ -166,7 +187,37 @@ npm start
 | `OPENAI_CODEX_BASE_URL` | No | `https://chatgpt.com/backend-api/codex` | Override for the Codex-compatible backend |
 | `TAG_PREFIX` | No | `ai` | Prefix for tags (produces `ai:classified`, etc.) |
 | `ENABLE_UI` | No | `false` | Enable the web UI for monitoring |
+| `APP_STATE_FILE` | No | `/data/state/app-state.json` | JSON file used for persisted local stats and backfill history |
+| `BACKFILL_DEFAULT_MAX_TRANSACTIONS` | No | `100` | Default max transactions shown in the UI backfill form |
+| `BACKFILL_MAX_TRANSACTIONS` | No | `1000` | Hard cap for a single backfill request |
+| `BACKFILL_PAGE_SIZE` | No | `100` | Firefly API page size used during historical scans |
 | `PORT` | No | `3000` | Port to listen on |
+
+## Historical backfill
+
+The normal webhook flow only handles new uncategorized withdrawals.
+
+If you want to classify older records too, open the built-in UI and use the **Historical Backfill** section:
+
+1. Optionally choose a start date and end date.
+2. Leave **Include transactions that already have an `ai:` tag** unchecked unless you explicitly want to revisit them.
+3. Run a preview first.
+4. If the preview looks right, queue the backfill.
+
+Backfill scans Firefly III withdrawals through the API, skips transactions that are already categorized, and skips already tagged transactions unless you opt in. It adds jobs to the same single-file queue used for live webhook work.
+
+## Usage dashboard
+
+When the UI is enabled, `http://localhost:3202` shows:
+
+- the active model, with a UI control to change it and reset to the default
+- live queue counts
+- outcome counts
+- tracked token totals
+- estimated cost when the model/provider reports usage
+- recent backfill runs and sample candidates
+
+These totals are stored locally in `APP_STATE_FILE` and survive container restarts when the `./data` volume is mounted.
 
 ## Health endpoint
 

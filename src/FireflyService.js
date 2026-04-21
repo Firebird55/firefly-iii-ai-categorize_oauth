@@ -38,6 +38,38 @@ export default class FireflyService {
     return categories;
   }
 
+  async getTransactionGroups({ type = "withdrawal", startDate = null, endDate = null, page = 1, limit = 50 } = {}) {
+    this.#assertConfigured();
+
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+      type,
+    });
+
+    if (startDate) {
+      params.set("start", startDate);
+    }
+
+    if (endDate) {
+      params.set("end", endDate);
+    }
+
+    const response = await fetch(`${this.#BASE_URL}/api/v1/transactions?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${this.#PERSONAL_TOKEN}` },
+    });
+
+    if (!response.ok) {
+      throw new FireflyException(response.status, response, await response.text());
+    }
+
+    const data = await response.json();
+    return {
+      groups: data.data ?? [],
+      pagination: data.meta?.pagination ?? null,
+    };
+  }
+
   async updateTransaction(transactionId, transactions, result) {
     this.#assertConfigured();
     const tag = this.#tagForOutcome(result.outcome);

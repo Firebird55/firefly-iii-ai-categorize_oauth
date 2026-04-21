@@ -13,6 +13,10 @@ export default class JobList {
     return this.#jobs;
   }
 
+  getJob(id) {
+    return this.#jobs.get(id) ?? null;
+  }
+
   createJob(data) {
     const id = uuid();
     const job = { id, created: new Date(), status: "queued", data };
@@ -44,6 +48,20 @@ export default class JobList {
     job.status = "failed";
     job.error = error;
     this.#emit("job updated", job);
+  }
+
+  hasOpenJobForTransaction(transactionId) {
+    for (const job of this.#jobs.values()) {
+      if (String(job.data?.transactionId) !== String(transactionId)) {
+        continue;
+      }
+
+      if (job.status === "queued" || job.status === "in_progress") {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   #emit(event, job) {

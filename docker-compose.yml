@@ -1,0 +1,29 @@
+services:
+  firefly_iii_ai_categorizer:
+    build:
+      context: .
+    container_name: firefly_iii_ai_categorizer
+    restart: unless-stopped
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    environment:
+      PORT: 3000
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+    ports:
+      - "${AI_CATEGORIZER_PORT:-3202}:3000"
+    volumes:
+      - ./data:/data
+    networks:
+      - firefly_iii
+
+networks:
+  firefly_iii:
+    external: true
+    name: ${FIREFLY_DOCKER_NETWORK:-fireflyiii_firefly_iii}

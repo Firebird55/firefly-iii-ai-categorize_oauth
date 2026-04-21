@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import { calculateCost, completeSimple, getModel, getModels } from "@mariozechner/pi-ai";
 import CodexAuthStore from "./CodexAuthStore.js";
 import { getConfigVariable, getOptionalConfigVariable } from "./util.js";
 
@@ -32,14 +32,16 @@ export default class ClassifierService {
   #authMode;
   #authStore;
   #baseURL;
+  #defaultModel;
   #model;
 
   constructor() {
     this.#authMode = resolveAuthMode();
-    this.#model = getConfigVariable(
+    this.#defaultModel = getConfigVariable(
       "OPENAI_MODEL",
       this.#authMode === "codex_oauth" ? "gpt-5.4-mini" : "gpt-4o-mini",
     );
+    this.#model = this.#defaultModel;
 
     if (this.#authMode === "codex_oauth") {
       this.#baseURL = getConfigVariable(
@@ -69,17 +71,45 @@ export default class ClassifierService {
   }
 
   async classify(categories, destinationName, description, amount) {
+    const modelName = this.#model;
     const userPrompt = this.#buildPrompt(categories, destinationName, description, amount);
-    const raw = await this.#runClassifier(userPrompt);
-    return normalizeClassificationResult(categories, userPrompt, raw);
+    const response = await this.#runClassifier(userPrompt, modelName);
+    return normalizeClassificationResult(categories, userPrompt, response.text, response.usage, modelName);
   }
 
   getModel() {
     return this.#model;
   }
 
+  getDefaultModel() {
+    return this.#defaultModel;
+  }
+
   getAuthMode() {
     return this.#authMode;
+  }
+
+  getAvailableModels() {
+    const provider = this.#authMode === "codex_oauth" ? "openai-codex" : "openai";
+    return getModels(provider).map((model) => model.id);
+  }
+
+  allowsCustomModelInput() {
+    return this.#authMode !== "codex_oauth";
+  }
+
+  setModel(model) {
+    const normalizedModel = normalizeText(model);
+    if (!normalizedModel) {
+      throw new Error("Model name is required.");
+    }
+
+    this.#assertModelSupported(normalizedModel);
+    this.#model = normalizedModel;
+  }
+
+  resetModel() {
+    this.#model = this.#defaultModel;
   }
 
   async getHealthStatus() {
@@ -116,14 +146,14 @@ export default class ClassifierService {
     return parts.join("\n");
   }
 
-  async #runClassifier(userPrompt) {
+  async #runClassifier(userPrompt, modelName) {
     if (this.#authMode === "codex_oauth") {
-      return this.#classifyWithCodex(userPrompt);
+      return this.#classifyWithCodex(userPrompt, modelName);
     }
-    return this.#classifyWithApiKey(userPrompt);
+    return this.#classifyWithApiKey(userPrompt, modelName);
   }
 
-  async #classifyWithApiKey(userPrompt) {
+  async #classifyWithApiKey(userPrompt, modelName) {
     if (!this.#client) {
       throw new Error(
         "OPENAI_API_KEY is missing. Set OPENAI_AUTH_MODE=codex_oauth to use Codex auth instead.",
@@ -131,7 +161,7 @@ export default class ClassifierService {
     }
 
     const response = await this.#client.chat.completions.create({
-      model: this.#model,
+      model: modelName,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
@@ -140,13 +170,23 @@ export default class ClassifierService {
       temperature: 0.1,
     });
 
-    return response.choices[0]?.message?.content ?? "";
+    return {
+      text: response.choices[0]?.message?.content ?? "",
+      usage: normalizeOpenAiUsage(response.usage, modelName),
+    };
   }
 
-  async #classifyWithCodex(userPrompt) {
+  async #classifyWithCodex(userPrompt, modelName) {
     const accessToken = await this.#authStore.getAccessToken();
+    const modelDefinition = getModel("openai-codex", modelName);
+    if (!modelDefinition) {
+      throw new Error(
+        `Model "${modelName}" is not supported for Codex OAuth mode.`,
+      );
+    }
+
     const model = {
-      ...getModel("openai-codex", this.#model),
+      ...modelDefinition,
       baseUrl: this.#baseURL,
     };
 
@@ -158,7 +198,22 @@ export default class ClassifierService {
       reasoning: "low",
     });
 
-    return extractAssistantText(response);
+    return {
+      text: extractAssistantText(response),
+      usage: normalizePiAiUsage(response.usage),
+    };
+  }
+
+  #assertModelSupported(modelName) {
+    if (this.#authMode !== "codex_oauth") {
+      return;
+    }
+
+    if (!this.getAvailableModels().includes(modelName)) {
+      throw new Error(
+        `Model "${modelName}" is not available in Codex OAuth mode.`,
+      );
+    }
   }
 }
 
@@ -183,7 +238,7 @@ function extractAssistantText(message) {
   return chunks.join("\n").trim();
 }
 
-function normalizeClassificationResult(categories, userPrompt, raw) {
+function normalizeClassificationResult(categories, userPrompt, raw, usage, model) {
   let parsed;
 
   try {
@@ -198,6 +253,8 @@ function normalizeClassificationResult(categories, userPrompt, raw) {
       prompt: userPrompt,
       response: raw,
       rawResponse: raw,
+      usage,
+      model,
     };
   }
 
@@ -212,6 +269,8 @@ function normalizeClassificationResult(categories, userPrompt, raw) {
       prompt: userPrompt,
       response: raw,
       rawResponse: raw,
+      usage,
+      model,
     };
   }
 
@@ -224,6 +283,77 @@ function normalizeClassificationResult(categories, userPrompt, raw) {
     prompt: userPrompt,
     response: raw,
     rawResponse: raw,
+    usage,
+    model,
+  };
+}
+
+function normalizeOpenAiUsage(usage, modelName) {
+  if (!usage) {
+    return null;
+  }
+
+  const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+  const normalized = createUsagePayload({
+    input: Math.max((usage.prompt_tokens ?? 0) - cachedTokens, 0),
+    output: usage.completion_tokens ?? 0,
+    cacheRead: cachedTokens,
+    cacheWrite: 0,
+    totalTokens: usage.total_tokens ?? ((usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)),
+  });
+
+  const model = getModel("openai", modelName);
+  if (model) {
+    calculateCost(model, normalized);
+  }
+
+  return normalized;
+}
+
+function normalizePiAiUsage(usage) {
+  if (!usage) {
+    return null;
+  }
+
+  const normalized = createUsagePayload({
+    input: usage.input ?? 0,
+    output: usage.output ?? 0,
+    cacheRead: usage.cacheRead ?? 0,
+    cacheWrite: usage.cacheWrite ?? 0,
+    totalTokens: usage.totalTokens ?? 0,
+  });
+
+  normalized.cost = {
+    input: usage.cost?.input ?? normalized.cost.input,
+    output: usage.cost?.output ?? normalized.cost.output,
+    cacheRead: usage.cost?.cacheRead ?? normalized.cost.cacheRead,
+    cacheWrite: usage.cost?.cacheWrite ?? normalized.cost.cacheWrite,
+    total: usage.cost?.total ?? normalized.cost.total,
+  };
+
+  return normalized;
+}
+
+function createUsagePayload({
+  input = 0,
+  output = 0,
+  cacheRead = 0,
+  cacheWrite = 0,
+  totalTokens = 0,
+} = {}) {
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    totalTokens,
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+    },
   };
 }
 

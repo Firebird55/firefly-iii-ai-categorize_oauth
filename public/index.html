@@ -1,139 +1,1007 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport"
-          content="width=device-width, user-scalable=no, initial-scale=1.0, minimum-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>FireflyService III AI Categorizer</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            background: lightgray;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Firefly III AI Categorizer</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffaf2;
+      --panel-strong: #fff;
+      --line: #d8ccb8;
+      --text: #28231d;
+      --muted: #6d665d;
+      --accent: #0d6b63;
+      --accent-soft: #d5efe9;
+      --warning: #a85f18;
+      --warning-soft: #f7e5d0;
+      --danger: #b33b2e;
+      --danger-soft: #f8ddd8;
+      --shadow: 0 18px 40px rgba(73, 53, 28, 0.12);
+    }
 
-        .container {
-            max-width: max(80%, 1024px);
-            margin: 5% auto;
-            padding: 24px;
-            background: #FFF;
-            border-radius: 5px;
-            box-shadow: 0 0 5px rgba(0, 0, 0, .25);
-        }
+    * {
+      box-sizing: border-box;
+    }
 
-        h1 {
-            text-align: center;
-        }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(13, 107, 99, 0.08), transparent 28rem),
+        radial-gradient(circle at top right, rgba(168, 95, 24, 0.08), transparent 24rem),
+        linear-gradient(180deg, #fbf6ee 0%, var(--bg) 100%);
+    }
 
-        .job {
-            border: solid 1px;
-            border-radius: 5px;
-            margin-bottom: 2em;
-            padding: 24px;
-        }
+    .shell {
+      width: min(1200px, calc(100% - 32px));
+      margin: 32px auto 48px;
+      display: grid;
+      gap: 20px;
+    }
 
-        pre {
-            padding: 7px;
-            background: #eeeeee;
-            overflow-x: auto;
-        }
-    </style>
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid rgba(216, 204, 184, 0.9);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px;
+      display: grid;
+      gap: 18px;
+      background:
+        linear-gradient(135deg, rgba(13, 107, 99, 0.1), transparent 45%),
+        linear-gradient(160deg, rgba(168, 95, 24, 0.12), transparent 65%),
+        var(--panel);
+    }
+
+    .eyebrow {
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-family: "IBM Plex Serif", Georgia, serif;
+      font-size: clamp(2rem, 4vw, 3rem);
+      line-height: 1.05;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      max-width: 48rem;
+      line-height: 1.55;
+    }
+
+    .meta-row,
+    .cards,
+    .split,
+    .jobs {
+      display: grid;
+      gap: 16px;
+    }
+
+    .meta-row {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .meta-chip,
+    .card,
+    .job {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel-strong);
+    }
+
+    .meta-chip {
+      padding: 14px 16px;
+    }
+
+    .meta-chip strong,
+    .card strong {
+      display: block;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .meta-chip span,
+    .card .value {
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+
+    .cards {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .card {
+      padding: 18px;
+      min-height: 120px;
+    }
+
+    .card .subvalue {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.93rem;
+      line-height: 1.4;
+    }
+
+    .panel {
+      padding: 22px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .panel-header p {
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 50rem;
+    }
+
+    .split {
+      grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.9fr);
+      align-items: start;
+    }
+
+    form {
+      display: grid;
+      gap: 14px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    input,
+    button {
+      font: inherit;
+    }
+
+    input[type="date"],
+    input[type="number"],
+    input[type="text"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fffdfa;
+      color: var(--text);
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+      transform: none;
+    }
+
+    .primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    .secondary {
+      background: #efe5d8;
+      color: var(--text);
+    }
+
+    .note {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      color: #17423e;
+      line-height: 1.45;
+    }
+
+    .note.warning {
+      background: var(--warning-soft);
+      color: #72400f;
+    }
+
+    .note.error {
+      background: var(--danger-soft);
+      color: #6c1f17;
+    }
+
+    .summary-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .summary-item {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+
+    .summary-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 6px;
+    }
+
+    .jobs {
+      grid-template-columns: 1fr;
+    }
+
+    .job {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .job-top,
+    .job-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      align-items: center;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      background: #ede7dc;
+      color: var(--text);
+    }
+
+    .pill.queued,
+    .pill.in_progress {
+      background: var(--warning-soft);
+      color: #704212;
+    }
+
+    .pill.finished,
+    .pill.classified {
+      background: var(--accent-soft);
+      color: #155149;
+    }
+
+    .pill.assumed {
+      background: #ece8fb;
+      color: #4b3d91;
+    }
+
+    .pill.failed,
+    .pill.needs_review {
+      background: var(--danger-soft);
+      color: #7c291f;
+    }
+
+    .job-meta {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .job-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .job-field {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #f8f3eb;
+      border: 1px solid rgba(216, 204, 184, 0.75);
+    }
+
+    .job-field strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: #fffdfa;
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 14px;
+      border-radius: 12px;
+      background: #f2ece2;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.9rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    th,
+    td {
+      padding: 10px 8px;
+      border-bottom: 1px solid rgba(216, 204, 184, 0.65);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .empty {
+      padding: 18px;
+      border: 1px dashed var(--line);
+      border-radius: 18px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.45);
+    }
+
+    @media (max-width: 880px) {
+      .split {
+        grid-template-columns: 1fr;
+      }
+
+      .panel-header {
+        flex-direction: column;
+      }
+    }
+  </style>
 </head>
 <body>
-<div class="container">
-    <h1>Firefly III AI Categorizer</h1>
-    <section>
-        <h2>Jobs</h2>
-        <div id="mount"></div>
-<!--        <article class="job">-->
-<!--            <div><strong>Status:</strong> <span>queued</span></div>-->
-<!--            <div><strong>Created:</strong>-->
-<!--                <time>2023-05-21 15:50:00</time>-->
-<!--            </div>-->
-<!--            <div><strong>Webhook UUID:</strong> <span>34zrurjd-44df-we4dtfds</span></div>-->
-<!--            <div><strong>Destination name:</strong> <span>LIEFERANDO.DE LIEFERSERVI</span></div>-->
-<!--            <div><strong>Description:</strong> <span>LIEFERANDO.DE LIEFERSERVI; AMSTERDAM NL; KARTE 8338; 40010075001 16052023; KDN-REF 000000986464</span>-->
-<!--            </div>-->
-<!--            <div><strong>Prompt:</strong><br>-->
-<!--                <pre>Given i want to categorize transactions on my bank account into this categories: Bargeld, Gas, Haushalt, Kino, Lebensmittel, Lieferdienst, ÖPNV, Restaurants, Rundfunkbeitrag, Strom-->
-<!--In which category would a transaction from "LIEFERANDO.DE LIEFERSERVI" with the subject "LIEFERANDO.DE LIEFERSERVI; AMSTERDAM NL; KARTE 8338; 40010075001 16052023; KDN-REF 000000986464" fall into?-->
-<!--Just output the name of the category. Does not have to be a complete sentence.</pre>-->
-<!--            </div>-->
-<!--            <div><strong>Open AI's guess:</strong><br>-->
-<!--                <pre>-->
-<!--Lieferdienst-->
-<!--</pre>-->
-<!--            </div>-->
-<!--        </article>-->
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Firefly III + Codex</p>
+        <h1>AI Categorizer Dashboard</h1>
+      </div>
+      <p class="subtitle">
+        New uncategorized withdrawals are handled automatically through the Firefly webhook.
+        This page also lets you preview or queue historical backfills and shows local token and cost totals.
+      </p>
+      <div class="meta-row" id="meta-row"></div>
     </section>
-</div>
 
-<script src="/socket.io/socket.io.js"></script>
-<script>
-    let socket = io();
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Model Control</h2>
+          <p>Change the active model here. The new model applies immediately to new jobs and any queued jobs that have not started yet.</p>
+        </div>
+      </div>
+      <div class="split">
+        <form id="model-form">
+          <label>
+            Active model
+            <input type="text" id="model-input" list="model-options" autocomplete="off" spellcheck="false">
+            <datalist id="model-options"></datalist>
+          </label>
 
-    const mount = document.getElementById('mount');
+          <div class="actions">
+            <button type="button" class="primary" id="apply-model-button">Apply model</button>
+            <button type="button" class="secondary" id="reset-model-button">Reset to default</button>
+          </div>
 
-    socket.on('jobs', jobs => {
-        console.log('jobs', jobs);
+          <div class="note" id="model-note">
+            Pick one of the suggested models, then apply it. Your selection is stored locally and survives restarts.
+          </div>
+        </form>
 
-        jobs.sort((a, b) => {
-            return new Date(b.created) - new Date(a.created);
-        })
+        <div id="model-summary"></div>
+      </div>
+    </section>
 
-        jobs.forEach(job => {
-            const element = document.createElement('div');
-            element.innerHTML = renderJob(job);
-            mount.appendChild(element)
-        });
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Usage And Queue</h2>
+          <p>These totals are stored locally in the container volume, so they survive restarts as long as the `data` folder stays mounted.</p>
+        </div>
+      </div>
+      <div class="cards" id="overview-cards"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Historical Backfill</h2>
+          <p>Preview is the safe first step. It scans historical withdrawals, skips categorized or already AI-tagged items, and shows what would be queued.</p>
+        </div>
+      </div>
+      <div class="split">
+        <form id="backfill-form">
+          <div class="form-grid">
+            <label>
+              Start date
+              <input type="date" id="start-date" name="startDate">
+            </label>
+            <label>
+              End date
+              <input type="date" id="end-date" name="endDate">
+            </label>
+            <label>
+              Max transactions
+              <input type="number" id="max-transactions" name="maxTransactions" min="1" step="1">
+            </label>
+          </div>
+
+          <label class="checkbox">
+            <input type="checkbox" id="include-tagged" name="includeTagged">
+            Include transactions that already have an `ai:` tag
+          </label>
+
+          <div class="actions">
+            <button type="button" class="secondary" id="preview-button">Preview historical scan</button>
+            <button type="button" class="primary" id="queue-button">Queue historical backfill</button>
+          </div>
+
+          <div class="note" id="backfill-note">
+            Preview first if you want to see the scope before adding jobs to the live queue.
+          </div>
+        </form>
+
+        <div id="backfill-summary"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Jobs</h2>
+          <p>The list below is live. Finished and failed jobs stay visible until the service restarts.</p>
+        </div>
+      </div>
+      <div class="jobs" id="jobs"></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const state = {
+      jobs: [],
+      stats: {
+        classifications: { total: 0, byOutcome: {}, bySource: {}, byModel: {} },
+        writes: { finished: 0, failed: 0, bySource: {} },
+        usage: {
+          callsWithUsage: 0,
+          callsWithoutUsage: 0,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { total: 0 }
+        },
+        backfill: { runs: [] }
+      },
+      queue: { total: 0, queued: 0, inProgress: 0, finished: 0, failed: 0 },
+      settings: {}
+    };
+
+    const socket = io();
+    const metaRow = document.getElementById("meta-row");
+    const overviewCards = document.getElementById("overview-cards");
+    const jobsMount = document.getElementById("jobs");
+    const backfillSummary = document.getElementById("backfill-summary");
+    const backfillNote = document.getElementById("backfill-note");
+    const modelSummary = document.getElementById("model-summary");
+    const modelNote = document.getElementById("model-note");
+    const maxTransactionsInput = document.getElementById("max-transactions");
+    const modelInput = document.getElementById("model-input");
+    const modelOptions = document.getElementById("model-options");
+    const previewButton = document.getElementById("preview-button");
+    const queueButton = document.getElementById("queue-button");
+    const applyModelButton = document.getElementById("apply-model-button");
+    const resetModelButton = document.getElementById("reset-model-button");
+
+    async function boot() {
+      await refreshState();
+      bindForms();
+      render();
+    }
+
+    socket.on("jobs", (jobs) => {
+      state.jobs = jobs;
+      state.queue = summarizeJobs(jobs);
+      render();
     });
 
-    socket.on('job created', e => {
-        console.log('job created', e);
-        const element = document.createElement('div');
-        element.innerHTML = renderJob(e.job);
-        mount.prepend(element);
-    })
+    socket.on("job created", (payload) => {
+      state.jobs = payload.jobs;
+      state.queue = summarizeJobs(payload.jobs);
+      render();
+    });
 
-    socket.on('job updated', e => {
-        console.log('job updated', e)
+    socket.on("job updated", (payload) => {
+      state.jobs = payload.jobs;
+      state.queue = summarizeJobs(payload.jobs);
+      render();
+    });
 
-        const element = document.createElement('div');
-        element.innerHTML = renderJob(e.job);
+    socket.on("stats updated", (stats) => {
+      state.stats = stats;
+      render();
+    });
 
-        const oldElement = document.querySelector(`[data-job-id="${e.job.id}"]`);
-        oldElement.before(element);
-        oldElement.remove();
-    })
+    socket.on("settings updated", (settings) => {
+      state.settings = settings;
+      syncModelControls();
+      render();
+    });
 
-    const renderJob = (job) => {
-        return `<article class="job" data-job-id="${job.id}">
-            <div><strong>ID:</strong> <span>${job.id}</span></div>
-            <div><strong>Status:</strong> <span>${job.status}</span></div>
-            <div><strong>Created:</strong>
-                <time>${Intl.DateTimeFormat(undefined, {
-            dateStyle: 'medium',
-            timeStyle: 'medium'
-        }).format(new Date(job.created))}</time>
-            </div>
-            <div><strong>Destination name:</strong> <span>${job.data?.destinationName || ''}</span></div>
-            <div><strong>Description:</strong> <span>${job.data?.description || ''}</span>
-            <div><strong>Guessed category:</strong> <span>${job.data?.category ? job.data.category : '<em>Not yet classified</em>'}</span>
-            </div>
-            ${ job.data?.prompt ? `<div><strong>Prompt:</strong><br>
-                <details>
-                    <summary>Show</summary>
-                    <pre>${job.data.prompt}</pre>
-                </details>
-            </div>` : ''}
-            ${ job.data?.response ? `<div><strong>Open AI's response:</strong>
-                 <details>
-                    <summary>Show</summary>
-                    <pre>${job.data.response}</pre>
-                 </details>
-            </div>` : ''}
-        </article>`
+    async function refreshState() {
+      const response = await fetch("/api/state");
+      const payload = await response.json();
+      state.jobs = payload.jobs || [];
+      state.stats = payload.stats || state.stats;
+      state.queue = payload.queue || summarizeJobs(state.jobs);
+      state.settings = payload.settings || {};
+      syncModelControls();
+      if (!maxTransactionsInput.value) {
+        maxTransactionsInput.value = state.settings.backfillDefaultMaxTransactions || 100;
+      }
     }
-</script>
+
+    function bindForms() {
+      previewButton.addEventListener("click", () => runBackfill(true));
+      queueButton.addEventListener("click", () => runBackfill(false));
+      applyModelButton.addEventListener("click", () => saveModel(false));
+      resetModelButton.addEventListener("click", () => saveModel(true));
+    }
+
+    async function runBackfill(dryRun) {
+      setButtonsDisabled(true);
+      setBackfillMessage(dryRun
+        ? "Previewing historical withdrawals. This does not queue any jobs."
+        : "Queueing historical withdrawals. Jobs will appear below as they are added.");
+
+      try {
+        const response = await fetch("/api/backfill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            startDate: document.getElementById("start-date").value || null,
+            endDate: document.getElementById("end-date").value || null,
+            maxTransactions: document.getElementById("max-transactions").value || null,
+            includeTagged: document.getElementById("include-tagged").checked,
+            dryRun
+          })
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Backfill request failed.");
+        }
+
+        await refreshState();
+        const action = dryRun ? "Preview finished." : "Backfill queued.";
+        setBackfillMessage(`${action} Inspected ${payload.inspected} groups and found ${payload.queueableCandidates} queueable candidate(s).`);
+        render();
+      } catch (error) {
+        setBackfillMessage(error.message, "error");
+      } finally {
+        setButtonsDisabled(false);
+      }
+    }
+
+    function setButtonsDisabled(disabled) {
+      previewButton.disabled = disabled;
+      queueButton.disabled = disabled;
+    }
+
+    async function saveModel(resetToDefault) {
+      setModelButtonsDisabled(true);
+      setModelMessage(resetToDefault
+        ? "Resetting the model to the saved default."
+        : "Applying the new model. New jobs will use it immediately.");
+
+      try {
+        const response = await fetch("/api/settings/model", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: resetToDefault ? "" : modelInput.value
+          })
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Model update failed.");
+        }
+
+        state.settings = payload.settings || state.settings;
+        syncModelControls();
+        setModelMessage(payload.message || "Model updated.");
+        render();
+      } catch (error) {
+        setModelMessage(error.message, "error");
+      } finally {
+        setModelButtonsDisabled(false);
+      }
+    }
+
+    function setModelButtonsDisabled(disabled) {
+      applyModelButton.disabled = disabled;
+      resetModelButton.disabled = disabled;
+    }
+
+    function setModelMessage(message, tone = "info") {
+      modelNote.className = `note${tone === "error" ? " error" : tone === "warning" ? " warning" : ""}`;
+      modelNote.textContent = message;
+    }
+
+    function setBackfillMessage(message, tone = "info") {
+      backfillNote.className = `note${tone === "error" ? " error" : tone === "warning" ? " warning" : ""}`;
+      backfillNote.textContent = message;
+    }
+
+    function render() {
+      renderMeta();
+      renderModelSummary();
+      renderOverview();
+      renderBackfill();
+      renderJobs();
+    }
+
+    function renderMeta() {
+      metaRow.innerHTML = [
+        renderMetaChip("Model", escapeHtml(state.settings.currentModel || "Unknown")),
+        renderMetaChip("Auth Mode", escapeHtml(state.settings.authMode || "Unknown")),
+        renderMetaChip("UI", state.settings.uiEnabled ? "Enabled" : "Disabled"),
+        renderMetaChip("Tag Prefix", escapeHtml(state.settings.tagPrefix || "ai")),
+        renderMetaChip("State File", escapeHtml(state.settings.appStateFile || "/data/state/app-state.json"))
+      ].join("");
+    }
+
+    function renderModelSummary() {
+      const availableModels = state.settings.availableModels || [];
+      const overrideLabel = state.settings.modelOverrideActive ? "Custom selection active" : "Using default selection";
+      const inputMode = state.settings.allowsCustomModelInput
+        ? "You can type any model name. Suggested models are listed below."
+        : "Codex OAuth mode only allows models from the supported list.";
+
+      modelSummary.innerHTML = `
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span>Current Model</span>
+            <strong>${escapeHtml(state.settings.currentModel || "—")}</strong>
+            <div class="muted">${escapeHtml(overrideLabel)}</div>
+          </div>
+          <div class="summary-item">
+            <span>Default Model</span>
+            <strong>${escapeHtml(state.settings.defaultModel || "—")}</strong>
+            <div class="muted">${escapeHtml(inputMode)}</div>
+          </div>
+          <div class="summary-item">
+            <span>Suggested Models</span>
+            <strong>${formatNumber(availableModels.length)} known option(s)</strong>
+            <div class="muted">${escapeHtml(availableModels.slice(0, 8).join(", ") || "No model suggestions available")}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderOverview() {
+      const usage = state.stats.usage || {};
+      const classifications = state.stats.classifications || {};
+      const writes = state.stats.writes || {};
+
+      overviewCards.innerHTML = [
+        renderCard("Classifications", formatNumber(classifications.total || 0), `Classified ${formatNumber(classifications.byOutcome?.CLASSIFIED || 0)} · Assumed ${formatNumber(classifications.byOutcome?.ASSUMED || 0)} · Needs review ${formatNumber(classifications.byOutcome?.NEEDS_REVIEW || 0)}`),
+        renderCard("Total Tokens", formatNumber(usage.totalTokens || 0), `Input ${formatNumber(usage.input || 0)} · Output ${formatNumber(usage.output || 0)}`),
+        renderCard("Estimated Cost", formatCurrency(usage.cost?.total || 0), `Tracked calls ${formatNumber(usage.callsWithUsage || 0)} · Missing usage ${formatNumber(usage.callsWithoutUsage || 0)}`),
+        renderCard("Live Queue", formatNumber(state.queue.total || 0), `Queued ${formatNumber(state.queue.queued || 0)} · Running ${formatNumber(state.queue.inProgress || 0)} · Failed ${formatNumber(state.queue.failed || 0)}`),
+        renderCard("Writebacks", formatNumber((writes.finished || 0) + (writes.failed || 0)), `Succeeded ${formatNumber(writes.finished || 0)} · Failed ${formatNumber(writes.failed || 0)}`),
+        renderCard("Backfill Runs", formatNumber(state.stats.backfill?.runs?.length || 0), latestBackfillSummary())
+      ].join("");
+    }
+
+    function renderBackfill() {
+      const run = state.stats.backfill?.runs?.[0];
+      if (!run) {
+        backfillSummary.innerHTML = `<div class="empty">No backfill has been run yet. Start with a preview to see how many historical withdrawals are eligible.</div>`;
+        return;
+      }
+
+      const sampleRows = run.sampleCandidates?.length
+        ? `<table>
+            <thead>
+              <tr>
+                <th>Transaction</th>
+                <th>Date</th>
+                <th>Destination</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${run.sampleCandidates.map((candidate) => `
+                <tr>
+                  <td>${escapeHtml(candidate.transactionId || "")}</td>
+                  <td>${escapeHtml(formatDate(candidate.date))}</td>
+                  <td>${escapeHtml(candidate.destinationName || candidate.description || "")}</td>
+                  <td>${escapeHtml(candidate.amount == null ? "" : String(candidate.amount))}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>`
+        : `<div class="empty">No sample candidates were recorded for this run.</div>`;
+
+      backfillSummary.innerHTML = `
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span>Last Run</span>
+            <strong>${escapeHtml(run.mode === "preview" ? "Preview" : "Queued Backfill")}</strong>
+            <div class="muted">${escapeHtml(formatDateTime(run.completedAt))}</div>
+          </div>
+          <div class="summary-item">
+            <span>Scope</span>
+            <strong>${formatNumber(run.inspected || 0)} inspected</strong>
+            <div class="muted">${formatNumber(run.queueableCandidates || 0)} queueable · ${formatNumber(run.duplicateOpenJobs || 0)} already open</div>
+          </div>
+          <div class="summary-item">
+            <span>Queued</span>
+            <strong>${formatNumber(run.queued || 0)} job(s)</strong>
+            <div class="muted">${escapeHtml(run.stoppedBecause || "end-of-results")}</div>
+          </div>
+          <div class="summary-item">
+            <span>Sample Candidates</span>
+            ${sampleRows}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderJobs() {
+      const jobs = [...state.jobs].sort((a, b) => new Date(b.created) - new Date(a.created));
+
+      if (jobs.length === 0) {
+        jobsMount.innerHTML = `<div class="empty">No jobs yet. New webhook transactions and queued backfills will show up here.</div>`;
+        return;
+      }
+
+      jobsMount.innerHTML = jobs.map(renderJob).join("");
+    }
+
+    function renderJob(job) {
+      const statusClass = statusClassName(job.status);
+      const outcomeClass = statusClassName(job.data?.outcome || "");
+      const usage = job.data?.usage;
+
+      return `
+        <article class="job">
+          <div class="job-top">
+            <span class="pill ${statusClass}">${escapeHtml(job.status)}</span>
+            ${job.data?.outcome ? `<span class="pill ${outcomeClass}">${escapeHtml(job.data.outcome)}</span>` : ""}
+            <span class="pill">${escapeHtml(job.data?.source || "webhook")}</span>
+            <span class="pill">${escapeHtml(job.data?.transactionId || "")}</span>
+          </div>
+
+          <div class="job-meta">
+            <span>${escapeHtml(formatDateTime(job.created))}</span>
+            ${job.data?.date ? `<span>${escapeHtml(formatDate(job.data.date))}</span>` : ""}
+            ${job.error ? `<span>${escapeHtml(job.error)}</span>` : ""}
+          </div>
+
+          <div class="job-grid">
+            <div class="job-field">
+              <strong>Destination</strong>
+              <div>${escapeHtml(job.data?.destinationName || "—")}</div>
+            </div>
+            <div class="job-field">
+              <strong>Description</strong>
+              <div>${escapeHtml(job.data?.description || "—")}</div>
+            </div>
+            <div class="job-field">
+              <strong>Amount</strong>
+              <div>${escapeHtml(job.data?.amount == null ? "—" : String(job.data.amount))}</div>
+            </div>
+            <div class="job-field">
+              <strong>Category</strong>
+              <div>${escapeHtml(job.data?.category || "Not set")}</div>
+            </div>
+            <div class="job-field">
+              <strong>Reason</strong>
+              <div>${escapeHtml(job.data?.reason || "—")}</div>
+            </div>
+            <div class="job-field">
+              <strong>Usage</strong>
+              <div>${usage ? escapeHtml(`${formatNumber(usage.totalTokens || 0)} tokens · ${formatCurrency(usage.cost?.total || 0)}`) : "Not reported"}</div>
+            </div>
+          </div>
+
+          ${job.data?.assumption ? `
+            <div class="note warning">
+              Assumption: ${escapeHtml(job.data.assumption)}
+            </div>
+          ` : ""}
+
+          ${job.data?.prompt ? `
+            <details>
+              <summary>Prompt</summary>
+              <pre>${escapeHtml(job.data.prompt)}</pre>
+            </details>
+          ` : ""}
+
+          ${job.data?.response ? `
+            <details>
+              <summary>Model response</summary>
+              <pre>${escapeHtml(job.data.response)}</pre>
+            </details>
+          ` : ""}
+        </article>
+      `;
+    }
+
+    function renderMetaChip(label, value) {
+      return `
+        <div class="meta-chip">
+          <strong>${label}</strong>
+          <span>${value}</span>
+        </div>
+      `;
+    }
+
+    function renderCard(label, value, subvalue) {
+      return `
+        <div class="card">
+          <strong>${label}</strong>
+          <div class="value">${value}</div>
+          <div class="subvalue">${subvalue}</div>
+        </div>
+      `;
+    }
+
+    function latestBackfillSummary() {
+      const run = state.stats.backfill?.runs?.[0];
+      if (!run) {
+        return "No previews yet";
+      }
+      return `${run.mode === "preview" ? "Preview" : "Queued"} ${formatDateTime(run.completedAt)}`;
+    }
+
+    function syncModelControls() {
+      modelInput.value = state.settings.currentModel || "";
+      const models = state.settings.availableModels || [];
+      modelOptions.innerHTML = models
+        .map((model) => `<option value="${escapeHtml(model)}"></option>`)
+        .join("");
+    }
+
+    function summarizeJobs(jobs) {
+      return jobs.reduce((summary, job) => {
+        summary.total += 1;
+        if (job.status === "queued") summary.queued += 1;
+        if (job.status === "in_progress") summary.inProgress += 1;
+        if (job.status === "finished") summary.finished += 1;
+        if (job.status === "failed") summary.failed += 1;
+        return summary;
+      }, { total: 0, queued: 0, inProgress: 0, finished: 0, failed: 0 });
+    }
+
+    function statusClassName(value) {
+      return String(value || "").toLowerCase().replace(/[^a-z]+/g, "_");
+    }
+
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
+    function formatCurrency(value) {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4
+      }).format(Number(value || 0));
+    }
+
+    function formatDateTime(value) {
+      if (!value) return "—";
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(value));
+    }
+
+    function formatDate(value) {
+      if (!value) return "—";
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium"
+      }).format(new Date(value));
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    boot().catch((error) => {
+      console.error(error);
+      setBackfillMessage(error.message || "Failed to load dashboard.", "error");
+    });
+  </script>
 </body>
 </html>

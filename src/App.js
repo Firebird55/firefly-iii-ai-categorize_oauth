@@ -1,18 +1,27 @@
+import { randomUUID } from "node:crypto";
 import express from "express";
-import { getConfigVariable } from "./util.js";
-import FireflyService from "./FireflyService.js";
-import ClassifierService from "./ClassifierService.js";
-import { Server } from "socket.io";
 import * as http from "http";
 import Queue from "queue";
+import { Server } from "socket.io";
+import ClassifierService from "./ClassifierService.js";
+import FireflyService from "./FireflyService.js";
 import JobList from "./JobList.js";
+import StatsStore from "./StatsStore.js";
+import { evaluateTransactionGroup } from "./transactionEligibility.js";
+import { getConfigVariable } from "./util.js";
 
 export default class App {
   #PORT;
   #ENABLE_UI;
+  #APP_STATE_FILE;
+  #TAG_PREFIX;
+  #BACKFILL_DEFAULT_MAX_TRANSACTIONS;
+  #BACKFILL_MAX_TRANSACTIONS;
+  #BACKFILL_PAGE_SIZE;
 
   #firefly;
   #classifier;
+  #statsStore;
 
   #server;
   #io;
@@ -24,11 +33,22 @@ export default class App {
   constructor() {
     this.#PORT = getConfigVariable("PORT", "3000");
     this.#ENABLE_UI = getConfigVariable("ENABLE_UI", "false") === "true";
+    this.#APP_STATE_FILE = getConfigVariable("APP_STATE_FILE", "/data/state/app-state.json");
+    this.#TAG_PREFIX = getConfigVariable("TAG_PREFIX", "ai");
+    this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS = parseIntegerEnv(
+      "BACKFILL_DEFAULT_MAX_TRANSACTIONS",
+      100,
+    );
+    this.#BACKFILL_MAX_TRANSACTIONS = parseIntegerEnv("BACKFILL_MAX_TRANSACTIONS", 1000);
+    this.#BACKFILL_PAGE_SIZE = parseIntegerEnv("BACKFILL_PAGE_SIZE", 100);
   }
 
   async run() {
     this.#firefly = new FireflyService();
     this.#classifier = new ClassifierService();
+    this.#statsStore = new StatsStore({ stateFile: this.#APP_STATE_FILE });
+    await this.#statsStore.load();
+    this.#restorePersistedModel();
 
     this.#queue = new Queue({
       timeout: 60 * 1000,
@@ -48,111 +68,391 @@ export default class App {
     this.#jobList = new JobList();
     this.#jobList.on("job created", (data) => this.#io.emit("job created", data));
     this.#jobList.on("job updated", (data) => this.#io.emit("job updated", data));
+    this.#statsStore.on("updated", (data) => this.#io.emit("stats updated", data));
 
-    this.#express.use(express.json());
+    this.#express.use(express.json({ limit: "1mb" }));
 
     if (this.#ENABLE_UI) {
       this.#express.use("/", express.static("public"));
     }
 
     this.#express.get("/health", this.#onHealth.bind(this));
+    this.#express.get("/api/state", this.#onState.bind(this));
+    this.#express.post("/api/settings/model", this.#onUpdateModel.bind(this));
     this.#express.post("/webhook", this.#onWebhook.bind(this));
+    this.#express.post("/api/backfill", this.#onBackfill.bind(this));
 
     this.#server.listen(this.#PORT, () => {
       console.log(`firefly-iii-ai-categorize v2 running on port ${this.#PORT}`);
-      console.log(`Three-outcome model: CLASSIFIED | ASSUMED | NEEDS_REVIEW`);
+      console.log("Three-outcome model: CLASSIFIED | ASSUMED | NEEDS_REVIEW");
       console.log(`UI ${this.#ENABLE_UI ? "enabled" : "disabled"}`);
+      console.log(`Backfill max transactions: ${this.#BACKFILL_MAX_TRANSACTIONS}`);
+      console.log(`State file: ${this.#APP_STATE_FILE}`);
     });
 
     this.#io.on("connection", (socket) => {
       socket.emit("jobs", Array.from(this.#jobList.getJobs().values()));
+      socket.emit("stats updated", this.#statsStore.getSnapshot());
+      socket.emit("settings updated", this.#buildStatePayload().settings);
     });
+  }
+
+  #restorePersistedModel() {
+    const persistedModel = this.#statsStore.getSelectedModel();
+    if (!persistedModel) {
+      return;
+    }
+
+    try {
+      this.#classifier.setModel(persistedModel);
+    } catch (error) {
+      console.warn(`Ignoring persisted model "${persistedModel}":`, error.message);
+      this.#statsStore.setSelectedModel(null);
+    }
+  }
+
+  async #onBackfill(req, res) {
+    try {
+      const options = normalizeBackfillOptions(req.body ?? {}, {
+        defaultMaxTransactions: this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS,
+        maxTransactionsLimit: this.#BACKFILL_MAX_TRANSACTIONS,
+      });
+      const result = await this.#runBackfill(options);
+      res.json(result);
+    } catch (error) {
+      console.error("Backfill request failed:", error);
+      res.status(error instanceof BackfillException ? 400 : 500).json({
+        error: error.message,
+      });
+    }
+  }
+
+  #onUpdateModel(req, res) {
+    try {
+      const rawModel = typeof req.body?.model === "string" ? req.body.model.trim() : "";
+
+      if (!rawModel) {
+        this.#classifier.resetModel();
+        this.#statsStore.setSelectedModel(null);
+      } else {
+        this.#classifier.setModel(rawModel);
+        this.#statsStore.setSelectedModel(
+          this.#classifier.getModel() === this.#classifier.getDefaultModel()
+            ? null
+            : this.#classifier.getModel(),
+        );
+      }
+
+      const settings = this.#buildStatePayload().settings;
+      this.#io.emit("settings updated", settings);
+
+      res.json({
+        ok: true,
+        settings,
+        message: rawModel
+          ? `Model changed to ${this.#classifier.getModel()}`
+          : `Model reset to ${this.#classifier.getDefaultModel()}`,
+      });
+    } catch (error) {
+      console.error("Failed to update model:", error);
+      res.status(400).json({
+        error: error.message,
+      });
+    }
   }
 
   #onWebhook(req, res) {
     try {
-      this.#handleWebhook(req);
-      res.send("Queued");
-    } catch (e) {
-      console.error(e);
-      res.status(400).send(e.message);
+      const result = this.#handleWebhook(req.body);
+      res.status(result.statusCode).send(result.message);
+    } catch (error) {
+      console.error(error);
+      res.status(400).send(error.message);
     }
   }
 
-  #handleWebhook(req) {
-    if (req.body?.trigger !== "STORE_TRANSACTION") {
+  #handleWebhook(body) {
+    if (body?.trigger !== "STORE_TRANSACTION") {
       throw new WebhookException("trigger is not STORE_TRANSACTION");
     }
 
-    if (req.body?.response !== "TRANSACTIONS") {
+    if (body?.response !== "TRANSACTIONS") {
       throw new WebhookException("response is not TRANSACTIONS");
     }
 
-    if (!req.body?.content?.id) {
+    if (!body?.content?.id) {
       throw new WebhookException("Missing content.id");
     }
 
-    const transactions = req.body.content.transactions || [];
-    if (transactions.length === 0) {
-      throw new WebhookException("No transactions in payload");
-    }
-
-    const txn = transactions[0];
-
-    if (txn.type !== "withdrawal") {
-      throw new WebhookException(`Transaction type "${txn.type}" is not a withdrawal — skipping`);
-    }
-
-    if (txn.category_id !== null) {
-      throw new WebhookException("Category already set — skipping");
-    }
-
-    if (!txn.description && !txn.destination_name) {
-      throw new WebhookException("No description or destination — cannot classify");
-    }
-
-    const job = this.#jobList.createJob({
-      transactionId: req.body.content.id,
-      destinationName: txn.destination_name || "",
-      description: txn.description || "",
-      amount: txn.amount || null,
+    const evaluation = evaluateTransactionGroup(body.content, {
+      tagPrefix: this.#TAG_PREFIX,
     });
 
+    const queued = this.#queueTransactionGroup({
+      source: "webhook",
+      transactionGroup: body.content,
+      evaluation,
+    });
+
+    if (!queued.queued) {
+      return {
+        statusCode: 200,
+        message: reasonToWebhookMessage(queued.reason, evaluation.transaction),
+      };
+    }
+
+    return {
+      statusCode: 200,
+      message: "Queued",
+    };
+  }
+
+  async #processJob({ jobId, transactionId, transactions, source }) {
+    const job = this.#jobList.getJob(jobId);
+    if (!job) {
+      return;
+    }
+
+    this.#jobList.setJobInProgress(jobId);
+    let writeAttempted = false;
+
+    try {
+      const categories = await this.#firefly.getCategories();
+      this.#firefly.setCategoryList(categories);
+      const categoryNames = categories.map((category) => category.name);
+
+      const result = await this.#classifier.classify(
+        categoryNames,
+        job.data.destinationName,
+        job.data.description,
+        job.data.amount,
+      );
+
+      if (result.category) {
+        const categoryId = this.#firefly.findCategoryId(result.category);
+        if (categoryId) {
+          result.categoryId = categoryId;
+        }
+      }
+
+      this.#jobList.updateJobData(jobId, { ...job.data, ...result });
+      this.#statsStore.recordClassification({
+        outcome: result.outcome,
+        source,
+        model: result.model,
+        usage: result.usage,
+      });
+
+      writeAttempted = true;
+      await this.#firefly.updateTransaction(transactionId, transactions, result);
+      this.#statsStore.recordWrite({ source, success: true });
+      this.#jobList.setJobFinished(jobId);
+    } catch (error) {
+      console.error(`Classification failed for transaction ${transactionId}:`, error);
+      if (writeAttempted) {
+        this.#statsStore.recordWrite({ source, success: false });
+      }
+      this.#jobList.setJobFailed(jobId, error.message);
+    }
+  }
+
+  #queueTransactionGroup({ source, transactionGroup, includeTagged = false, metadata = {}, evaluation = null }) {
+    const resolvedEvaluation = evaluation ?? evaluateTransactionGroup(transactionGroup, {
+      tagPrefix: this.#TAG_PREFIX,
+      includeTagged,
+    });
+
+    if (!resolvedEvaluation.eligible) {
+      return {
+        queued: false,
+        reason: resolvedEvaluation.reason,
+        evaluation: resolvedEvaluation,
+      };
+    }
+
+    const transactionId = resolvedEvaluation.transactionGroupId;
+    if (!transactionId) {
+      return {
+        queued: false,
+        reason: "missing-transaction-id",
+        evaluation: resolvedEvaluation,
+      };
+    }
+
+    if (this.#jobList.hasOpenJobForTransaction(transactionId)) {
+      return {
+        queued: false,
+        reason: "duplicate-open-job",
+        evaluation: resolvedEvaluation,
+      };
+    }
+
+    const transaction = resolvedEvaluation.transaction;
+    const job = this.#jobList.createJob({
+      source,
+      transactionId,
+      destinationName: transaction.destination_name || "",
+      description: transaction.description || "",
+      amount: transaction.amount || null,
+      date: transaction.date || null,
+      ...metadata,
+    });
+
+    const transactions = resolvedEvaluation.transactions.map((item) => ({ ...item }));
     this.#queue.push(async () => {
-      this.#jobList.setJobInProgress(job.id);
+      await this.#processJob({
+        jobId: job.id,
+        transactionId,
+        transactions,
+        source,
+      });
+    });
 
-      try {
-        const categories = await this.#firefly.getCategories();
-        this.#firefly.setCategoryList(categories);
-        const categoryNames = categories.map((c) => c.name);
+    return {
+      queued: true,
+      job,
+      evaluation: resolvedEvaluation,
+    };
+  }
 
-        const result = await this.#classifier.classify(
-          categoryNames,
-          job.data.destinationName,
-          job.data.description,
-          job.data.amount
-        );
+  async #runBackfill(options) {
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const skippedReasonCounts = {};
+    const sampleCandidates = [];
+    let inspected = 0;
+    let eligibleCandidates = 0;
+    let queueableCandidates = 0;
+    let queued = 0;
+    let duplicateOpenJobs = 0;
+    let page = 1;
+    let stoppedBecause = "end-of-results";
 
-        if (result.category) {
-          const catId = this.#firefly.findCategoryId(result.category);
-          if (catId) result.categoryId = catId;
+    while (true) {
+      const { groups, pagination } = await this.#firefly.getTransactionGroups({
+        type: "withdrawal",
+        startDate: options.startDate,
+        endDate: options.endDate,
+        page,
+        limit: this.#BACKFILL_PAGE_SIZE,
+      });
+
+      if (groups.length === 0) {
+        break;
+      }
+
+      for (const group of groups) {
+        inspected += 1;
+
+        const evaluation = evaluateTransactionGroup(group, {
+          tagPrefix: this.#TAG_PREFIX,
+          includeTagged: options.includeTagged,
+        });
+
+        if (!evaluation.eligible) {
+          skippedReasonCounts[evaluation.reason] = (skippedReasonCounts[evaluation.reason] ?? 0) + 1;
+          continue;
         }
 
-        const newData = { ...job.data, ...result };
-        this.#jobList.updateJobData(job.id, newData);
+        eligibleCandidates += 1;
 
-        await this.#firefly.updateTransaction(
-          req.body.content.id,
-          req.body.content.transactions,
-          result
-        );
+        if (this.#jobList.hasOpenJobForTransaction(evaluation.transactionGroupId)) {
+          duplicateOpenJobs += 1;
+          continue;
+        }
 
-        this.#jobList.setJobFinished(job.id);
-      } catch (err) {
-        console.error(`Classification failed for transaction ${req.body.content.id}:`, err);
-        this.#jobList.setJobFailed(job.id, err.message);
+        queueableCandidates += 1;
+        if (sampleCandidates.length < 5) {
+          sampleCandidates.push(buildCandidatePreview(evaluation.transactionGroupId, evaluation.transaction));
+        }
+
+        if (options.dryRun) {
+          if (queueableCandidates >= options.maxTransactions) {
+            stoppedBecause = "max-transactions-reached";
+            break;
+          }
+          continue;
+        }
+
+        const queuedResult = this.#queueTransactionGroup({
+          source: "backfill",
+          transactionGroup: group,
+          includeTagged: options.includeTagged,
+          metadata: { backfillRunId: runId },
+          evaluation,
+        });
+
+        if (queuedResult.queued) {
+          queued += 1;
+        } else if (queuedResult.reason === "duplicate-open-job") {
+          duplicateOpenJobs += 1;
+          queueableCandidates = Math.max(queueableCandidates - 1, 0);
+        }
+
+        if (queued >= options.maxTransactions) {
+          stoppedBecause = "max-transactions-reached";
+          break;
+        }
       }
-    });
+
+      if (stoppedBecause === "max-transactions-reached") {
+        break;
+      }
+
+      if (!pagination || page >= pagination.total_pages) {
+        break;
+      }
+
+      page += 1;
+    }
+
+    const result = {
+      runId,
+      mode: options.dryRun ? "preview" : "queue",
+      startedAt,
+      completedAt: new Date().toISOString(),
+      stoppedBecause,
+      options,
+      inspected,
+      eligibleCandidates,
+      queueableCandidates,
+      queued,
+      duplicateOpenJobs,
+      skippedReasonCounts,
+      sampleCandidates,
+    };
+
+    this.#statsStore.recordBackfillRun(result);
+    return result;
+  }
+
+  #onState(_req, res) {
+    res.json(this.#buildStatePayload());
+  }
+
+  #buildStatePayload() {
+    const jobs = Array.from(this.#jobList.getJobs().values());
+
+    return {
+      jobs,
+      stats: this.#statsStore.getSnapshot(),
+      queue: summarizeJobs(jobs),
+      settings: {
+        uiEnabled: this.#ENABLE_UI,
+        authMode: this.#classifier.getAuthMode(),
+        tagPrefix: this.#TAG_PREFIX,
+        appStateFile: this.#statsStore.getStateFile(),
+        currentModel: this.#classifier.getModel(),
+        defaultModel: this.#classifier.getDefaultModel(),
+        modelOverrideActive: this.#classifier.getModel() !== this.#classifier.getDefaultModel(),
+        selectedModel: this.#statsStore.getSelectedModel(),
+        availableModels: this.#classifier.getAvailableModels(),
+        allowsCustomModelInput: this.#classifier.allowsCustomModelInput(),
+        backfillDefaultMaxTransactions: this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS,
+        backfillMaxTransactions: this.#BACKFILL_MAX_TRANSACTIONS,
+        backfillPageSize: this.#BACKFILL_PAGE_SIZE,
+      },
+    };
   }
 
   async #onHealth(_req, res) {
@@ -165,10 +465,12 @@ export default class App {
       ready,
       model: this.#classifier.getModel(),
       authMode: this.#classifier.getAuthMode(),
+      queue: summarizeJobs(Array.from(this.#jobList.getJobs().values())),
       checks: {
         firefly: fireflyStatus,
         classifier: classifierStatus,
         uiEnabled: this.#ENABLE_UI,
+        stateFile: this.#statsStore.getStateFile(),
       },
     });
   }
@@ -177,5 +479,136 @@ export default class App {
 class WebhookException extends Error {
   constructor(message) {
     super(message);
+  }
+}
+
+class BackfillException extends Error {
+  constructor(message) {
+    super(message);
+  }
+}
+
+function parseIntegerEnv(name, defaultValue) {
+  const rawValue = getConfigVariable(name, String(defaultValue));
+  const parsed = Number.parseInt(rawValue, 10);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function normalizeBackfillOptions(body, { defaultMaxTransactions, maxTransactionsLimit }) {
+  const startDate = normalizeDate(body.startDate);
+  const endDate = normalizeDate(body.endDate);
+  const maxTransactions = body.maxTransactions == null || body.maxTransactions === ""
+    ? defaultMaxTransactions
+    : Number.parseInt(String(body.maxTransactions), 10);
+
+  if (!Number.isInteger(maxTransactions) || maxTransactions <= 0 || maxTransactions > maxTransactionsLimit) {
+    throw new BackfillException(
+      `maxTransactions must be an integer between 1 and ${maxTransactionsLimit}.`,
+    );
+  }
+
+  if (startDate && endDate && startDate > endDate) {
+    throw new BackfillException("startDate must be on or before endDate.");
+  }
+
+  return {
+    startDate,
+    endDate,
+    maxTransactions,
+    dryRun: normalizeBoolean(body.dryRun, true),
+    includeTagged: normalizeBoolean(body.includeTagged, false),
+  };
+}
+
+function normalizeDate(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new BackfillException("Dates must be in YYYY-MM-DD format.");
+  }
+
+  return value;
+}
+
+function normalizeBoolean(value, defaultValue) {
+  if (value == null) {
+    return defaultValue;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") {
+      return true;
+    }
+    if (value.toLowerCase() === "false") {
+      return false;
+    }
+  }
+
+  return defaultValue;
+}
+
+function buildCandidatePreview(transactionId, transaction) {
+  return {
+    transactionId,
+    date: transaction?.date ?? null,
+    destinationName: transaction?.destination_name ?? "",
+    description: transaction?.description ?? "",
+    amount: transaction?.amount ?? null,
+  };
+}
+
+function summarizeJobs(jobs) {
+  const summary = {
+    total: jobs.length,
+    queued: 0,
+    inProgress: 0,
+    finished: 0,
+    failed: 0,
+  };
+
+  for (const job of jobs) {
+    if (job.status === "queued") {
+      summary.queued += 1;
+    } else if (job.status === "in_progress") {
+      summary.inProgress += 1;
+    } else if (job.status === "finished") {
+      summary.finished += 1;
+    } else if (job.status === "failed") {
+      summary.failed += 1;
+    }
+  }
+
+  return summary;
+}
+
+function reasonToWebhookMessage(reason, transaction) {
+  switch (reason) {
+    case "missing-transactions":
+      return "No transactions in payload";
+    case "not-withdrawal":
+      return `Transaction type "${transaction?.type}" is not a withdrawal - skipping`;
+    case "already-categorized":
+      return "Category already set - skipping";
+    case "already-ai-tagged":
+      return "Transaction already has an AI tag - skipping";
+    case "missing-text":
+      return "No description or destination - cannot classify";
+    case "duplicate-open-job":
+      return "Transaction already queued - skipping";
+    case "missing-transaction-id":
+      return "Missing transaction id";
+    default:
+      return "Transaction is not eligible for classification";
   }
 }

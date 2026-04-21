@@ -1,2 +1,8 @@
 .idea
 node_modules
+.env
+.env.local
+data/secrets/*
+!data/secrets/.gitkeep
+data/state/*
+!data/state/.gitkeep
