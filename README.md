@@ -193,7 +193,8 @@ npm start
 | `BACKFILL_DEFAULT_MAX_TRANSACTIONS` | No | `100` | Default max transactions shown in the UI backfill form |
 | `BACKFILL_MAX_TRANSACTIONS` | No | `1000` | Hard cap for a single backfill request |
 | `BACKFILL_PAGE_SIZE` | No | `100` | Firefly API page size used during historical scans |
-| `QUEUE_CONCURRENCY` | No | `4` | Number of categorization workers that may run in parallel |
+| `QUEUE_CONCURRENCY` | No | `4` | Default number of categorization workers that may run in parallel |
+| `QUEUE_MAX_CONCURRENCY` | No | `16` | Upper bound for the worker-count control in the UI |
 | `PORT` | No | `3000` | Port to listen on |
 
 ## Historical backfill and reevaluation
@@ -217,6 +218,7 @@ Backfill scans Firefly III withdrawals through the API, skips transactions that 
 When the UI is enabled, `http://localhost:3202` shows:
 
 - the active model, with a UI control to change it and reset to the default
+- the live worker count, with a UI control to change it and reset to the default
 - an optional model override for historical reevaluation runs
 - live queue counts
 - outcome counts

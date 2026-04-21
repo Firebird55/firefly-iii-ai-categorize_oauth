@@ -87,6 +87,25 @@ test("StatsStore persists a selected model override", async () => {
   assert.equal(loaded.getSnapshot().settings.selectedModel, null);
 });
 
+test("StatsStore persists a selected worker override", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "stats-store-workers-"));
+  const stateFile = path.join(tempDir, "state.json");
+  const store = new StatsStore({ stateFile });
+  await store.load();
+
+  store.setSelectedQueueConcurrency(8);
+  await waitForState(stateFile, (state) => state.settings?.selectedQueueConcurrency === 8);
+
+  const loaded = new StatsStore({ stateFile });
+  await loaded.load();
+
+  assert.equal(loaded.getSelectedQueueConcurrency(), 8);
+
+  loaded.setSelectedQueueConcurrency(null);
+  await waitForState(stateFile, (state) => state.settings?.selectedQueueConcurrency === null);
+  assert.equal(loaded.getSnapshot().settings.selectedQueueConcurrency, null);
+});
+
 async function waitForState(filePath, predicate = () => true) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {

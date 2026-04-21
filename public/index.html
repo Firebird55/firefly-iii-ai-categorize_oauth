@@ -171,6 +171,11 @@
       gap: 18px;
     }
 
+    .section-stack {
+      display: grid;
+      gap: 18px;
+    }
+
     form {
       display: grid;
       gap: 14px;
@@ -582,7 +587,29 @@
           <p>These totals are stored locally in the container volume, so they survive restarts as long as the `data` folder stays mounted.</p>
         </div>
       </div>
-      <div class="cards" id="overview-cards"></div>
+      <div class="section-stack">
+        <div class="split">
+          <form id="worker-form">
+            <label>
+              Concurrent workers
+              <input type="number" id="worker-count-input" min="1" step="1">
+            </label>
+
+            <div class="actions">
+              <button type="button" class="primary" id="apply-workers-button">Apply workers</button>
+              <button type="button" class="secondary" id="reset-workers-button">Reset to default</button>
+            </div>
+
+            <div class="note" id="worker-note">
+              Change how many transactions are categorized at the same time. Higher values process backfills faster but put more load on Firefly III and the model backend.
+            </div>
+          </form>
+
+          <div id="worker-summary"></div>
+        </div>
+
+        <div class="cards" id="overview-cards"></div>
+      </div>
     </section>
 
     <section class="panel">
@@ -693,14 +720,17 @@
     const socket = io();
     const metaRow = document.getElementById("meta-row");
     const overviewCards = document.getElementById("overview-cards");
+    const workerSummary = document.getElementById("worker-summary");
     const jobsToolbar = document.getElementById("jobs-toolbar");
     const jobsMount = document.getElementById("jobs");
     const backfillSummary = document.getElementById("backfill-summary");
     const backfillNote = document.getElementById("backfill-note");
     const modelSummary = document.getElementById("model-summary");
     const modelNote = document.getElementById("model-note");
+    const workerNote = document.getElementById("worker-note");
     const maxTransactionsInput = document.getElementById("max-transactions");
     const modelInput = document.getElementById("model-input");
+    const workerCountInput = document.getElementById("worker-count-input");
     const backfillModelInput = document.getElementById("backfill-model-input");
     const modelOptions = document.getElementById("model-options");
     const scopeSelect = document.getElementById("scope-select");
@@ -709,6 +739,8 @@
     const queueButton = document.getElementById("queue-button");
     const applyModelButton = document.getElementById("apply-model-button");
     const resetModelButton = document.getElementById("reset-model-button");
+    const applyWorkersButton = document.getElementById("apply-workers-button");
+    const resetWorkersButton = document.getElementById("reset-workers-button");
 
     async function boot() {
       await refreshState();
@@ -745,6 +777,7 @@
       state.queue = payload.queue || summarizeJobs(state.jobs);
       state.settings = payload.settings || {};
       syncModelControls();
+      syncWorkerControls();
       syncBackfillControls();
       if (!maxTransactionsInput.value) {
         maxTransactionsInput.value = state.settings.backfillDefaultMaxTransactions || 100;
@@ -756,6 +789,8 @@
       queueButton.addEventListener("click", () => runBackfill(false));
       applyModelButton.addEventListener("click", () => saveModel(false));
       resetModelButton.addEventListener("click", () => saveModel(true));
+      applyWorkersButton.addEventListener("click", () => saveWorkers(false));
+      resetWorkersButton.addEventListener("click", () => saveWorkers(true));
       scopeSelect.addEventListener("change", syncBackfillControls);
       jobsMount.addEventListener("input", onJobsInput);
       jobsMount.addEventListener("click", onJobsClick);
@@ -872,6 +907,7 @@
 
       state.settings = settings;
       syncModelControls();
+      syncWorkerControls();
       syncBackfillControls();
       scheduleRender();
     }
@@ -958,6 +994,7 @@
 
         state.settings = payload.settings || state.settings;
         syncModelControls();
+        syncWorkerControls();
         setModelMessage(payload.message || "Model updated.");
         scheduleRender({ preserveScroll: true });
       } catch (error) {
@@ -967,14 +1004,56 @@
       }
     }
 
+    async function saveWorkers(resetToDefault) {
+      setWorkerButtonsDisabled(true);
+      setWorkerMessage(resetToDefault
+        ? "Resetting the worker count to the saved default."
+        : "Applying the new worker count. Queued jobs will use it immediately.");
+
+      try {
+        const response = await fetch("/api/settings/workers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            concurrency: resetToDefault ? null : workerCountInput.value
+          })
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Worker update failed.");
+        }
+
+        state.settings = payload.settings || state.settings;
+        syncWorkerControls();
+        setWorkerMessage(payload.message || "Workers updated.");
+        scheduleRender({ preserveScroll: true });
+      } catch (error) {
+        setWorkerMessage(error.message, "error");
+      } finally {
+        setWorkerButtonsDisabled(false);
+      }
+    }
+
     function setModelButtonsDisabled(disabled) {
       applyModelButton.disabled = disabled;
       resetModelButton.disabled = disabled;
     }
 
+    function setWorkerButtonsDisabled(disabled) {
+      applyWorkersButton.disabled = disabled;
+      resetWorkersButton.disabled = disabled;
+      workerCountInput.disabled = disabled;
+    }
+
     function setModelMessage(message, tone = "info") {
       modelNote.className = `note${tone === "error" ? " error" : tone === "warning" ? " warning" : ""}`;
       modelNote.textContent = message;
+    }
+
+    function setWorkerMessage(message, tone = "info") {
+      workerNote.className = `note${tone === "error" ? " error" : tone === "warning" ? " warning" : ""}`;
+      workerNote.textContent = message;
     }
 
     function setBackfillMessage(message, tone = "info") {
@@ -1031,6 +1110,7 @@
         state.settings = pendingSettings;
         pendingSettings = null;
         syncModelControls();
+        syncWorkerControls();
         syncBackfillControls();
       }
 
@@ -1114,6 +1194,7 @@
     function render() {
       renderMeta();
       renderModelSummary();
+      renderWorkerSummary();
       renderOverview();
       renderBackfill();
       renderJobsToolbar();
@@ -1154,6 +1235,35 @@
             <span>Suggested Models</span>
             <strong>${formatNumber(availableModels.length)} known option(s)</strong>
             <div class="muted">${escapeHtml(availableModels.slice(0, 8).join(", ") || "No model suggestions available")}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderWorkerSummary() {
+      const currentWorkers = state.settings.queueConcurrency || state.settings.defaultQueueConcurrency || 1;
+      const defaultWorkers = state.settings.defaultQueueConcurrency || 1;
+      const maxWorkers = state.settings.queueMaxConcurrency || defaultWorkers;
+      const overrideLabel = state.settings.queueConcurrencyOverrideActive
+        ? "Custom worker count active"
+        : "Using default worker count";
+
+      workerSummary.innerHTML = `
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span>Current Workers</span>
+            <strong>${formatNumber(currentWorkers)}</strong>
+            <div class="muted">${escapeHtml(overrideLabel)}</div>
+          </div>
+          <div class="summary-item">
+            <span>Default Workers</span>
+            <strong>${formatNumber(defaultWorkers)}</strong>
+            <div class="muted">Reset returns to this value.</div>
+          </div>
+          <div class="summary-item">
+            <span>Allowed Range</span>
+            <strong>1 to ${formatNumber(maxWorkers)}</strong>
+            <div class="muted">Raise the max with <code>QUEUE_MAX_CONCURRENCY</code> if you need a wider range.</div>
           </div>
         </div>
       `;
@@ -1435,6 +1545,16 @@
       modelOptions.innerHTML = models
         .map((model) => `<option value="${escapeHtml(model)}"></option>`)
         .join("");
+    }
+
+    function syncWorkerControls() {
+      const defaultWorkers = state.settings.defaultQueueConcurrency || 1;
+      const currentWorkers = state.settings.queueConcurrency || defaultWorkers;
+      const maxWorkers = state.settings.queueMaxConcurrency || Math.max(defaultWorkers, currentWorkers);
+
+      workerCountInput.value = currentWorkers;
+      workerCountInput.min = "1";
+      workerCountInput.max = String(maxWorkers);
     }
 
     function syncBackfillControls() {

@@ -19,6 +19,7 @@ export default class App {
   #BACKFILL_MAX_TRANSACTIONS;
   #BACKFILL_PAGE_SIZE;
   #QUEUE_CONCURRENCY;
+  #QUEUE_MAX_CONCURRENCY;
 
   #firefly;
   #classifier;
@@ -43,6 +44,13 @@ export default class App {
     this.#BACKFILL_MAX_TRANSACTIONS = parseIntegerEnv("BACKFILL_MAX_TRANSACTIONS", 1000);
     this.#BACKFILL_PAGE_SIZE = parseIntegerEnv("BACKFILL_PAGE_SIZE", 100);
     this.#QUEUE_CONCURRENCY = parseIntegerEnv("QUEUE_CONCURRENCY", 4);
+    this.#QUEUE_MAX_CONCURRENCY = parseIntegerEnv(
+      "QUEUE_MAX_CONCURRENCY",
+      Math.max(this.#QUEUE_CONCURRENCY, 16),
+    );
+    if (this.#QUEUE_MAX_CONCURRENCY < this.#QUEUE_CONCURRENCY) {
+      throw new Error("QUEUE_MAX_CONCURRENCY must be greater than or equal to QUEUE_CONCURRENCY.");
+    }
   }
 
   async run() {
@@ -51,10 +59,11 @@ export default class App {
     this.#statsStore = new StatsStore({ stateFile: this.#APP_STATE_FILE });
     await this.#statsStore.load();
     this.#restorePersistedModel();
+    const queueConcurrency = this.#resolveInitialQueueConcurrency();
 
     this.#queue = new Queue({
       timeout: 60 * 1000,
-      concurrency: this.#QUEUE_CONCURRENCY,
+      concurrency: queueConcurrency,
       autostart: true,
     });
 
@@ -81,6 +90,7 @@ export default class App {
     this.#express.get("/health", this.#onHealth.bind(this));
     this.#express.get("/api/state", this.#onState.bind(this));
     this.#express.post("/api/settings/model", this.#onUpdateModel.bind(this));
+    this.#express.post("/api/settings/workers", this.#onUpdateWorkers.bind(this));
     this.#express.post("/webhook", this.#onWebhook.bind(this));
     this.#express.post("/api/backfill", this.#onBackfill.bind(this));
     this.#express.post("/api/reevaluate", this.#onReevaluate.bind(this));
@@ -90,7 +100,7 @@ export default class App {
       console.log("Three-outcome model: CLASSIFIED | ASSUMED | NEEDS_REVIEW");
       console.log(`UI ${this.#ENABLE_UI ? "enabled" : "disabled"}`);
       console.log(`Backfill max transactions: ${this.#BACKFILL_MAX_TRANSACTIONS}`);
-      console.log(`Queue concurrency: ${this.#QUEUE_CONCURRENCY}`);
+      console.log(`Queue concurrency: ${queueConcurrency} (default ${this.#QUEUE_CONCURRENCY})`);
       console.log(`State file: ${this.#APP_STATE_FILE}`);
     });
 
@@ -112,6 +122,23 @@ export default class App {
     } catch (error) {
       console.warn(`Ignoring persisted model "${persistedModel}":`, error.message);
       this.#statsStore.setSelectedModel(null);
+    }
+  }
+
+  #resolveInitialQueueConcurrency() {
+    const persistedConcurrency = this.#statsStore.getSelectedQueueConcurrency();
+    if (persistedConcurrency == null) {
+      return this.#QUEUE_CONCURRENCY;
+    }
+
+    try {
+      return validateQueueConcurrency(persistedConcurrency, {
+        maxConcurrency: this.#QUEUE_MAX_CONCURRENCY,
+      });
+    } catch (error) {
+      console.warn(`Ignoring persisted queue concurrency "${persistedConcurrency}":`, error.message);
+      this.#statsStore.setSelectedQueueConcurrency(null);
+      return this.#QUEUE_CONCURRENCY;
     }
   }
 
@@ -189,6 +216,38 @@ export default class App {
       });
     } catch (error) {
       console.error("Failed to update model:", error);
+      res.status(400).json({
+        error: error.message,
+      });
+    }
+  }
+
+  #onUpdateWorkers(req, res) {
+    try {
+      const normalizedValue = normalizeOptionalInteger(req.body?.concurrency);
+      const targetConcurrency = normalizedValue == null
+        ? this.#QUEUE_CONCURRENCY
+        : validateQueueConcurrency(normalizedValue, {
+          maxConcurrency: this.#QUEUE_MAX_CONCURRENCY,
+        });
+
+      this.#applyQueueConcurrency(targetConcurrency);
+      this.#statsStore.setSelectedQueueConcurrency(
+        targetConcurrency === this.#QUEUE_CONCURRENCY ? null : targetConcurrency,
+      );
+
+      const settings = this.#buildStatePayload().settings;
+      this.#io.emit("settings updated", settings);
+
+      res.json({
+        ok: true,
+        settings,
+        message: normalizedValue == null
+          ? `Workers reset to default (${this.#QUEUE_CONCURRENCY}).`
+          : `Workers changed to ${targetConcurrency}.`,
+      });
+    } catch (error) {
+      console.error("Failed to update workers:", error);
       res.status(400).json({
         error: error.message,
       });
@@ -515,6 +574,7 @@ export default class App {
 
   #buildStatePayload() {
     const jobs = Array.from(this.#jobList.getJobs().values());
+    const selectedQueueConcurrency = this.#statsStore.getSelectedQueueConcurrency();
 
     return {
       jobs,
@@ -534,9 +594,20 @@ export default class App {
         backfillDefaultMaxTransactions: this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS,
         backfillMaxTransactions: this.#BACKFILL_MAX_TRANSACTIONS,
         backfillPageSize: this.#BACKFILL_PAGE_SIZE,
-        queueConcurrency: this.#QUEUE_CONCURRENCY,
+        queueConcurrency: this.#queue?.concurrency ?? this.#resolveInitialQueueConcurrency(),
+        defaultQueueConcurrency: this.#QUEUE_CONCURRENCY,
+        queueMaxConcurrency: this.#QUEUE_MAX_CONCURRENCY,
+        selectedQueueConcurrency,
+        queueConcurrencyOverrideActive: selectedQueueConcurrency != null,
       },
     };
+  }
+
+  #applyQueueConcurrency(concurrency) {
+    this.#queue.concurrency = concurrency;
+    if (this.#queue.jobs.length > 0) {
+      this.#queue._start();
+    }
   }
 
   async #onHealth(_req, res) {
@@ -657,6 +728,36 @@ function normalizeBackfillScope(value) {
 
 function normalizeOptionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeOptionalInteger(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value : Number.NaN;
+  }
+
+  const normalized = String(value).trim();
+  if (normalized === "") {
+    return null;
+  }
+
+  if (!/^\d+$/.test(normalized)) {
+    return Number.NaN;
+  }
+
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function validateQueueConcurrency(value, { maxConcurrency }) {
+  if (!Number.isInteger(value) || value <= 0 || value > maxConcurrency) {
+    throw new Error(`Worker count must be an integer between 1 and ${maxConcurrency}.`);
+  }
+
+  return value;
 }
 
 function normalizeTransactionId(value) {

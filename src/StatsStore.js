@@ -39,6 +39,7 @@ const DEFAULT_STATE = {
   },
   settings: {
     selectedModel: null,
+    selectedQueueConcurrency: null,
   },
   updatedAt: null,
 };
@@ -85,6 +86,10 @@ export default class StatsStore {
     return this.#state.settings.selectedModel;
   }
 
+  getSelectedQueueConcurrency() {
+    return asNullablePositiveInteger(this.#state.settings.selectedQueueConcurrency);
+  }
+
   setSelectedModel(model) {
     const normalizedModel = normalizeOptionalString(model);
     if (this.#state.settings.selectedModel === normalizedModel) {
@@ -92,6 +97,16 @@ export default class StatsStore {
     }
 
     this.#state.settings.selectedModel = normalizedModel;
+    this.#touch();
+  }
+
+  setSelectedQueueConcurrency(concurrency) {
+    const normalizedConcurrency = asNullablePositiveInteger(concurrency);
+    if (this.#state.settings.selectedQueueConcurrency === normalizedConcurrency) {
+      return;
+    }
+
+    this.#state.settings.selectedQueueConcurrency = normalizedConcurrency;
     this.#touch();
   }
 
@@ -215,6 +230,9 @@ function mergeState(candidate) {
     ? candidate.backfill.runs.slice(0, 20)
     : [];
   merged.settings.selectedModel = normalizeOptionalString(candidate.settings?.selectedModel);
+  merged.settings.selectedQueueConcurrency = asNullablePositiveInteger(
+    candidate.settings?.selectedQueueConcurrency,
+  );
   merged.updatedAt = typeof candidate.updatedAt === "string" ? candidate.updatedAt : null;
 
   return merged;
@@ -222,6 +240,10 @@ function mergeState(candidate) {
 
 function asNumber(value) {
   return Number.isFinite(value) ? value : 0;
+}
+
+function asNullablePositiveInteger(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function asNumberMap(value) {
