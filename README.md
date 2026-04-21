@@ -26,7 +26,8 @@ The [original project](https://github.com/bahuma20/firefly-iii-ai-categorize) is
 - **Richer health endpoint** at `GET /health` with readiness and auth-mode details.
 - **Failed job tracking** in the UI.
 - **Local usage tracking** in the UI with token totals and estimated cost.
-- **Historical backfill mode** with preview and queue actions for older uncategorized withdrawals.
+- **Historical backfill + reevaluation mode** with preview and queue actions for older uncategorized withdrawals or already tagged `ai:assumed` / `ai:needs-review` entries.
+- **Direct Firefly III links** in the dashboard so each queued or reviewed entry can be opened in Firefly immediately.
 
 ## How it works
 
@@ -193,29 +194,34 @@ npm start
 | `BACKFILL_PAGE_SIZE` | No | `100` | Firefly API page size used during historical scans |
 | `PORT` | No | `3000` | Port to listen on |
 
-## Historical backfill
+## Historical backfill and reevaluation
 
 The normal webhook flow only handles new uncategorized withdrawals.
 
-If you want to classify older records too, open the built-in UI and use the **Historical Backfill** section:
+If you want to classify older records too, open the built-in UI and use the **Historical Scan And Reevaluation** section:
 
-1. Optionally choose a start date and end date.
-2. Leave **Include transactions that already have an `ai:` tag** unchecked unless you explicitly want to revisit them.
-3. Run a preview first.
-4. If the preview looks right, queue the backfill.
+1. Choose a **Scan scope**:
+   - `Uncategorized withdrawals` for the original backfill flow
+   - `Assumed only`, `Needs review only`, or `Assumed + needs review` to reevaluate prior AI decisions
+2. Optionally choose a start date and end date.
+3. Optionally enter a **Model override** if you want the reevaluation to run with a different model than the current active one.
+4. Run a preview first.
+5. If the preview looks right, queue the scan.
 
-Backfill scans Firefly III withdrawals through the API, skips transactions that are already categorized, and skips already tagged transactions unless you opt in. It adds jobs to the same single-file queue used for live webhook work.
+Backfill scans Firefly III withdrawals through the API, skips transactions that are already categorized, and skips already tagged transactions unless you opt in. Reevaluation mode instead targets transactions already tagged with `ai:assumed` and/or `ai:needs-review`, replaces the old AI outcome tag with the new one, and can clear a previously assumed category if the new result is `NEEDS_REVIEW`. Both flows add jobs to the same single-file queue used for live webhook work.
 
 ## Usage dashboard
 
 When the UI is enabled, `http://localhost:3202` shows:
 
 - the active model, with a UI control to change it and reset to the default
+- an optional model override for historical reevaluation runs
 - live queue counts
 - outcome counts
 - tracked token totals
 - estimated cost when the model/provider reports usage
-- recent backfill runs and sample candidates
+- recent scan runs and sample candidates
+- direct links to open each transaction in Firefly III
 
 These totals are stored locally in `APP_STATE_FILE` and survive container restarts when the `./data` volume is mounted.
 

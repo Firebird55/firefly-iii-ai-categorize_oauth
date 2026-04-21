@@ -32,7 +32,8 @@ test("StatsStore persists classifications, usage, and writes", async () => {
   });
   store.recordWrite({ source: "webhook", success: true });
 
-  await waitForFile(stateFile);
+  await waitForState(stateFile, (state) =>
+    state.classifications?.total === 1 && state.writes?.finished === 1);
 
   const loaded = new StatsStore({ stateFile });
   await loaded.load();
@@ -59,7 +60,7 @@ test("StatsStore stores a capped backfill history", async () => {
     store.recordBackfillRun({ runId: `run-${i}` });
   }
 
-  await waitForFile(stateFile);
+  await waitForState(stateFile, (state) => Array.isArray(state.backfill?.runs) && state.backfill.runs.length === 20);
   const snapshot = store.getSnapshot();
 
   assert.equal(snapshot.backfill.runs.length, 20);
@@ -74,7 +75,7 @@ test("StatsStore persists a selected model override", async () => {
   await store.load();
 
   store.setSelectedModel("gpt-5.4");
-  await waitForFile(stateFile);
+  await waitForState(stateFile, (state) => state.settings?.selectedModel === "gpt-5.4");
 
   const loaded = new StatsStore({ stateFile });
   await loaded.load();
@@ -82,18 +83,23 @@ test("StatsStore persists a selected model override", async () => {
   assert.equal(loaded.getSelectedModel(), "gpt-5.4");
 
   loaded.setSelectedModel(null);
-  await waitForFile(stateFile);
+  await waitForState(stateFile, (state) => state.settings?.selectedModel === null);
   assert.equal(loaded.getSnapshot().settings.selectedModel, null);
 });
 
-async function waitForFile(filePath) {
+async function waitForState(filePath, predicate = () => true) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      await fs.access(filePath);
-      return;
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (predicate(parsed)) {
+        return;
+      }
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      // Keep polling until the file is both valid JSON and matches the expected state.
     }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
   throw new Error(`Timed out waiting for ${filePath}`);

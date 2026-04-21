@@ -7,7 +7,7 @@ import ClassifierService from "./ClassifierService.js";
 import FireflyService from "./FireflyService.js";
 import JobList from "./JobList.js";
 import StatsStore from "./StatsStore.js";
-import { evaluateTransactionGroup } from "./transactionEligibility.js";
+import { evaluateTransactionGroup, TRANSACTION_SELECTION_SCOPES } from "./transactionEligibility.js";
 import { getConfigVariable } from "./util.js";
 
 export default class App {
@@ -117,6 +117,9 @@ export default class App {
         defaultMaxTransactions: this.#BACKFILL_DEFAULT_MAX_TRANSACTIONS,
         maxTransactionsLimit: this.#BACKFILL_MAX_TRANSACTIONS,
       });
+      if (options.model) {
+        options.model = this.#classifier.validateModel(options.model);
+      }
       const result = await this.#runBackfill(options);
       res.json(result);
     } catch (error) {
@@ -207,7 +210,7 @@ export default class App {
     };
   }
 
-  async #processJob({ jobId, transactionId, transactions, source }) {
+  async #processJob({ jobId, transactionId, transactions, source, modelOverride = null }) {
     const job = this.#jobList.getJob(jobId);
     if (!job) {
       return;
@@ -226,6 +229,7 @@ export default class App {
         job.data.destinationName,
         job.data.description,
         job.data.amount,
+        { model: modelOverride },
       );
 
       if (result.category) {
@@ -256,10 +260,18 @@ export default class App {
     }
   }
 
-  #queueTransactionGroup({ source, transactionGroup, includeTagged = false, metadata = {}, evaluation = null }) {
+  #queueTransactionGroup({
+    source,
+    transactionGroup,
+    includeTagged = false,
+    metadata = {},
+    evaluation = null,
+    scope = TRANSACTION_SELECTION_SCOPES.UNCATEGORIZED,
+  }) {
     const resolvedEvaluation = evaluation ?? evaluateTransactionGroup(transactionGroup, {
       tagPrefix: this.#TAG_PREFIX,
       includeTagged,
+      scope,
     });
 
     if (!resolvedEvaluation.eligible) {
@@ -291,10 +303,12 @@ export default class App {
     const job = this.#jobList.createJob({
       source,
       transactionId,
+      transactionUrl: this.#firefly.getTransactionUrl(transactionId),
       destinationName: transaction.destination_name || "",
       description: transaction.description || "",
       amount: transaction.amount || null,
       date: transaction.date || null,
+      currentOutcome: resolvedEvaluation.currentOutcome,
       ...metadata,
     });
 
@@ -305,6 +319,7 @@ export default class App {
         transactionId,
         transactions,
         source,
+        modelOverride: job.data.requestedModel ?? null,
       });
     });
 
@@ -318,6 +333,9 @@ export default class App {
   async #runBackfill(options) {
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
+    const source = options.scope === TRANSACTION_SELECTION_SCOPES.UNCATEGORIZED
+      ? "backfill"
+      : "reevaluation";
     const skippedReasonCounts = {};
     const sampleCandidates = [];
     let inspected = 0;
@@ -347,6 +365,7 @@ export default class App {
         const evaluation = evaluateTransactionGroup(group, {
           tagPrefix: this.#TAG_PREFIX,
           includeTagged: options.includeTagged,
+          scope: options.scope,
         });
 
         if (!evaluation.eligible) {
@@ -363,7 +382,14 @@ export default class App {
 
         queueableCandidates += 1;
         if (sampleCandidates.length < 5) {
-          sampleCandidates.push(buildCandidatePreview(evaluation.transactionGroupId, evaluation.transaction));
+          sampleCandidates.push(buildCandidatePreview(
+            evaluation.transactionGroupId,
+            evaluation.transaction,
+            {
+              currentOutcome: evaluation.currentOutcome,
+              transactionUrl: this.#firefly.getTransactionUrl(evaluation.transactionGroupId),
+            },
+          ));
         }
 
         if (options.dryRun) {
@@ -375,11 +401,16 @@ export default class App {
         }
 
         const queuedResult = this.#queueTransactionGroup({
-          source: "backfill",
+          source,
           transactionGroup: group,
           includeTagged: options.includeTagged,
-          metadata: { backfillRunId: runId },
+          metadata: {
+            backfillRunId: runId,
+            requestedModel: options.model,
+            selectionScope: options.scope,
+          },
           evaluation,
+          scope: options.scope,
         });
 
         if (queuedResult.queued) {
@@ -409,6 +440,7 @@ export default class App {
     const result = {
       runId,
       mode: options.dryRun ? "preview" : "queue",
+      source,
       startedAt,
       completedAt: new Date().toISOString(),
       stoppedBecause,
@@ -502,6 +534,7 @@ function parseIntegerEnv(name, defaultValue) {
 function normalizeBackfillOptions(body, { defaultMaxTransactions, maxTransactionsLimit }) {
   const startDate = normalizeDate(body.startDate);
   const endDate = normalizeDate(body.endDate);
+  const scope = normalizeBackfillScope(body.scope);
   const maxTransactions = body.maxTransactions == null || body.maxTransactions === ""
     ? defaultMaxTransactions
     : Number.parseInt(String(body.maxTransactions), 10);
@@ -519,6 +552,8 @@ function normalizeBackfillOptions(body, { defaultMaxTransactions, maxTransaction
   return {
     startDate,
     endDate,
+    scope,
+    model: normalizeOptionalString(body.model),
     maxTransactions,
     dryRun: normalizeBoolean(body.dryRun, true),
     includeTagged: normalizeBoolean(body.includeTagged, false),
@@ -558,9 +593,28 @@ function normalizeBoolean(value, defaultValue) {
   return defaultValue;
 }
 
-function buildCandidatePreview(transactionId, transaction) {
+function normalizeBackfillScope(value) {
+  if (value === TRANSACTION_SELECTION_SCOPES.ASSUMED
+    || value === TRANSACTION_SELECTION_SCOPES.NEEDS_REVIEW
+    || value === TRANSACTION_SELECTION_SCOPES.ATTENTION) {
+    return value;
+  }
+
+  return TRANSACTION_SELECTION_SCOPES.UNCATEGORIZED;
+}
+
+function normalizeOptionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function buildCandidatePreview(transactionId, transaction, {
+  currentOutcome = null,
+  transactionUrl = null,
+} = {}) {
   return {
     transactionId,
+    transactionUrl,
+    currentOutcome,
     date: transaction?.date ?? null,
     destinationName: transaction?.destination_name ?? "",
     description: transaction?.description ?? "",

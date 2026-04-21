@@ -191,7 +191,8 @@
 
     input[type="date"],
     input[type="number"],
-    input[type="text"] {
+    input[type="text"],
+    select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 12px;
@@ -200,11 +201,23 @@
       color: var(--text);
     }
 
+    a {
+      color: var(--accent);
+    }
+
+    a:hover {
+      color: #0a534d;
+    }
+
     .checkbox {
       display: flex;
       align-items: center;
       gap: 10px;
       color: var(--text);
+    }
+
+    .checkbox input:disabled + span {
+      color: var(--muted);
     }
 
     .actions {
@@ -408,6 +421,15 @@
       color: var(--muted);
     }
 
+    .inline-link {
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .inline-link:hover {
+      text-decoration: underline;
+    }
+
     .empty {
       padding: 18px;
       border: 1px dashed var(--line);
@@ -483,13 +505,22 @@
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2>Historical Backfill</h2>
-          <p>Preview is the safe first step. It scans historical withdrawals, skips categorized or already AI-tagged items, and shows what would be queued.</p>
+          <h2>Historical Scan And Reevaluation</h2>
+          <p>Preview is the safe first step. You can scan uncategorized withdrawals or specifically reevaluate `ai:assumed` and `ai:needs-review` entries with a different model.</p>
         </div>
       </div>
       <div class="split">
         <form id="backfill-form">
           <div class="form-grid">
+            <label>
+              Scan scope
+              <select id="scope-select" name="scope">
+                <option value="uncategorized">Uncategorized withdrawals</option>
+                <option value="assumed">Assumed only</option>
+                <option value="needs_review">Needs review only</option>
+                <option value="attention">Assumed + needs review</option>
+              </select>
+            </label>
             <label>
               Start date
               <input type="date" id="start-date" name="startDate">
@@ -502,11 +533,15 @@
               Max transactions
               <input type="number" id="max-transactions" name="maxTransactions" min="1" step="1">
             </label>
+            <label>
+              Model override
+              <input type="text" id="backfill-model-input" name="model" list="model-options" autocomplete="off" spellcheck="false" placeholder="Use active model">
+            </label>
           </div>
 
           <label class="checkbox">
             <input type="checkbox" id="include-tagged" name="includeTagged">
-            Include transactions that already have an `ai:` tag
+            <span>Include transactions that already have an `ai:` tag</span>
           </label>
 
           <div class="actions">
@@ -567,7 +602,10 @@
     const modelNote = document.getElementById("model-note");
     const maxTransactionsInput = document.getElementById("max-transactions");
     const modelInput = document.getElementById("model-input");
+    const backfillModelInput = document.getElementById("backfill-model-input");
     const modelOptions = document.getElementById("model-options");
+    const scopeSelect = document.getElementById("scope-select");
+    const includeTaggedInput = document.getElementById("include-tagged");
     const previewButton = document.getElementById("preview-button");
     const queueButton = document.getElementById("queue-button");
     const applyModelButton = document.getElementById("apply-model-button");
@@ -605,6 +643,7 @@
     socket.on("settings updated", (settings) => {
       state.settings = settings;
       syncModelControls();
+      syncBackfillControls();
       render();
     });
 
@@ -616,6 +655,7 @@
       state.queue = payload.queue || summarizeJobs(state.jobs);
       state.settings = payload.settings || {};
       syncModelControls();
+      syncBackfillControls();
       if (!maxTransactionsInput.value) {
         maxTransactionsInput.value = state.settings.backfillDefaultMaxTransactions || 100;
       }
@@ -626,23 +666,28 @@
       queueButton.addEventListener("click", () => runBackfill(false));
       applyModelButton.addEventListener("click", () => saveModel(false));
       resetModelButton.addEventListener("click", () => saveModel(true));
+      scopeSelect.addEventListener("change", syncBackfillControls);
     }
 
     async function runBackfill(dryRun) {
+      const scope = scopeSelect.value || "uncategorized";
+      const scopeLabel = formatScope(scope);
       setButtonsDisabled(true);
       setBackfillMessage(dryRun
-        ? "Previewing historical withdrawals. This does not queue any jobs."
-        : "Queueing historical withdrawals. Jobs will appear below as they are added.");
+        ? `Previewing ${scopeLabel.toLowerCase()}. This does not queue any jobs.`
+        : `Queueing ${scopeLabel.toLowerCase()}. Jobs will appear below as they are added.`);
 
       try {
         const response = await fetch("/api/backfill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            scope,
             startDate: document.getElementById("start-date").value || null,
             endDate: document.getElementById("end-date").value || null,
             maxTransactions: document.getElementById("max-transactions").value || null,
-            includeTagged: document.getElementById("include-tagged").checked,
+            includeTagged: includeTaggedInput.checked,
+            model: backfillModelInput.value || null,
             dryRun
           })
         });
@@ -654,7 +699,7 @@
 
         await refreshState();
         const action = dryRun ? "Preview finished." : "Backfill queued.";
-        setBackfillMessage(`${action} Inspected ${payload.inspected} groups and found ${payload.queueableCandidates} queueable candidate(s).`);
+        setBackfillMessage(`${action} Inspected ${payload.inspected} groups and found ${payload.queueableCandidates} queueable ${scopeLabel.toLowerCase()} candidate(s).`);
         render();
       } catch (error) {
         setBackfillMessage(error.message, "error");
@@ -666,6 +711,13 @@
     function setButtonsDisabled(disabled) {
       previewButton.disabled = disabled;
       queueButton.disabled = disabled;
+      scopeSelect.disabled = disabled;
+      backfillModelInput.disabled = disabled;
+      if (disabled) {
+        includeTaggedInput.disabled = true;
+      } else {
+        updateBackfillCheckboxState();
+      }
     }
 
     async function saveModel(resetToDefault) {
@@ -771,7 +823,7 @@
         renderCard("Estimated Cost", formatCurrency(usage.cost?.total || 0), `Tracked calls ${formatNumber(usage.callsWithUsage || 0)} · Missing usage ${formatNumber(usage.callsWithoutUsage || 0)}`),
         renderCard("Live Queue", formatNumber(state.queue.total || 0), `Queued ${formatNumber(state.queue.queued || 0)} · Running ${formatNumber(state.queue.inProgress || 0)} · Failed ${formatNumber(state.queue.failed || 0)}`),
         renderCard("Writebacks", formatNumber((writes.finished || 0) + (writes.failed || 0)), `Succeeded ${formatNumber(writes.finished || 0)} · Failed ${formatNumber(writes.failed || 0)}`),
-        renderCard("Backfill Runs", formatNumber(state.stats.backfill?.runs?.length || 0), latestBackfillSummary())
+        renderCard("Scan Runs", formatNumber(state.stats.backfill?.runs?.length || 0), latestBackfillSummary())
       ].join("");
     }
 
@@ -787,6 +839,7 @@
             <thead>
               <tr>
                 <th>Transaction</th>
+                <th>Outcome</th>
                 <th>Date</th>
                 <th>Destination</th>
                 <th>Amount</th>
@@ -795,7 +848,8 @@
             <tbody>
               ${run.sampleCandidates.map((candidate) => `
                 <tr>
-                  <td>${escapeHtml(candidate.transactionId || "")}</td>
+                  <td>${renderTransactionLink(candidate.transactionId, candidate.transactionUrl)}</td>
+                  <td>${escapeHtml(formatOutcome(candidate.currentOutcome))}</td>
                   <td>${escapeHtml(formatDate(candidate.date))}</td>
                   <td>${escapeHtml(candidate.destinationName || candidate.description || "")}</td>
                   <td>${escapeHtml(candidate.amount == null ? "" : String(candidate.amount))}</td>
@@ -810,7 +864,7 @@
           <div class="summary-item">
             <span>Last Run</span>
             <strong>${escapeHtml(run.mode === "preview" ? "Preview" : "Queued Backfill")}</strong>
-            <div class="muted">${escapeHtml(formatDateTime(run.completedAt))}</div>
+            <div class="muted">${escapeHtml(formatScope(run.options?.scope))} · ${escapeHtml(formatDateTime(run.completedAt))}</div>
           </div>
           <div class="summary-item">
             <span>Scope</span>
@@ -820,7 +874,7 @@
           <div class="summary-item">
             <span>Queued</span>
             <strong>${formatNumber(run.queued || 0)} job(s)</strong>
-            <div class="muted">${escapeHtml(run.stoppedBecause || "end-of-results")}</div>
+            <div class="muted">${escapeHtml(run.options?.model || "Active model")} · ${escapeHtml(run.stoppedBecause || "end-of-results")}</div>
           </div>
           <div class="summary-item">
             <span>Sample Candidates</span>
@@ -845,6 +899,7 @@
       const statusClass = statusClassName(job.status);
       const outcomeClass = statusClassName(job.data?.outcome || "");
       const usage = job.data?.usage;
+      const effectiveModel = job.data?.model || job.data?.requestedModel || state.settings.currentModel || null;
 
       return `
         <article class="job">
@@ -853,6 +908,7 @@
             ${job.data?.outcome ? `<span class="pill ${outcomeClass}">${escapeHtml(job.data.outcome)}</span>` : ""}
             <span class="pill">${escapeHtml(job.data?.source || "webhook")}</span>
             <span class="pill">${escapeHtml(job.data?.transactionId || "")}</span>
+            ${job.data?.transactionUrl ? `<a class="pill inline-link" href="${escapeAttribute(job.data.transactionUrl)}" target="_blank" rel="noreferrer">Open in Firefly III</a>` : ""}
           </div>
 
           <div class="job-meta">
@@ -883,10 +939,20 @@
               <div>${escapeHtml(job.data?.reason || "—")}</div>
             </div>
             <div class="job-field">
+              <strong>Model</strong>
+              <div>${escapeHtml(effectiveModel || "—")}</div>
+            </div>
+            <div class="job-field">
               <strong>Usage</strong>
               <div>${usage ? escapeHtml(`${formatNumber(usage.totalTokens || 0)} tokens · ${formatCurrency(usage.cost?.total || 0)}`) : "Not reported"}</div>
             </div>
           </div>
+
+          ${job.data?.currentOutcome && job.data?.source === "reevaluation" ? `
+            <div class="note">
+              Previous AI outcome: ${escapeHtml(formatOutcome(job.data.currentOutcome))}
+            </div>
+          ` : ""}
 
           ${job.data?.assumption ? `
             <div class="note warning">
@@ -935,7 +1001,7 @@
       if (!run) {
         return "No previews yet";
       }
-      return `${run.mode === "preview" ? "Preview" : "Queued"} ${formatDateTime(run.completedAt)}`;
+      return `${formatScope(run.options?.scope)} · ${run.mode === "preview" ? "Preview" : "Queued"} ${formatDateTime(run.completedAt)}`;
     }
 
     function syncModelControls() {
@@ -944,6 +1010,38 @@
       modelOptions.innerHTML = models
         .map((model) => `<option value="${escapeHtml(model)}"></option>`)
         .join("");
+    }
+
+    function syncBackfillControls() {
+      const reevaluationScope = updateBackfillCheckboxState();
+      if (previewButton.disabled || queueButton.disabled) {
+        return;
+      }
+
+      if (reevaluationScope) {
+        setBackfillMessage("Reevaluation scans already AI-tagged entries. Pick a model override if you want a second opinion from another model.");
+        return;
+      }
+
+      setBackfillMessage("Preview first if you want to see the scope before adding jobs to the live queue.");
+    }
+
+    function updateBackfillCheckboxState() {
+      const wasDisabled = includeTaggedInput.disabled;
+      const reevaluationScope = scopeSelect.value === "assumed"
+        || scopeSelect.value === "needs_review"
+        || scopeSelect.value === "attention";
+
+      includeTaggedInput.disabled = reevaluationScope;
+      if (reevaluationScope) {
+        includeTaggedInput.checked = true;
+        return true;
+      }
+
+      if (wasDisabled) {
+        includeTaggedInput.checked = false;
+      }
+      return false;
     }
 
     function summarizeJobs(jobs) {
@@ -959,6 +1057,29 @@
 
     function statusClassName(value) {
       return String(value || "").toLowerCase().replace(/[^a-z]+/g, "_");
+    }
+
+    function formatScope(value) {
+      if (value === "assumed") return "Assumed entries";
+      if (value === "needs_review") return "Needs review entries";
+      if (value === "attention") return "Assumed + needs review";
+      return "Uncategorized withdrawals";
+    }
+
+    function formatOutcome(value) {
+      if (value === "CLASSIFIED") return "Classified";
+      if (value === "ASSUMED") return "Assumed";
+      if (value === "NEEDS_REVIEW") return "Needs review";
+      return "—";
+    }
+
+    function renderTransactionLink(transactionId, transactionUrl) {
+      const label = escapeHtml(transactionId || "—");
+      if (!transactionUrl) {
+        return label;
+      }
+
+      return `<a class="inline-link" href="${escapeAttribute(transactionUrl)}" target="_blank" rel="noreferrer">${label}</a>`;
     }
 
     function formatNumber(value) {
@@ -996,6 +1117,10 @@
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
+    }
+
+    function escapeAttribute(value) {
+      return escapeHtml(value);
     }
 
     boot().catch((error) => {

@@ -82,7 +82,7 @@ export default class FireflyService {
     };
 
     for (const txn of transactions) {
-      const tags = [...(txn.tags || [])];
+      const tags = sanitizeOutcomeTags(txn.tags, this.#tagPrefix());
       if (!tags.includes(tag)) tags.push(tag);
 
       const update = {
@@ -93,6 +93,9 @@ export default class FireflyService {
       if (result.outcome !== "NEEDS_REVIEW" && result.category) {
         const catId = this.findCategoryId(result.category);
         if (catId) update.category_id = catId;
+      } else if (result.outcome === "NEEDS_REVIEW") {
+        update.category_id = null;
+        update.category_name = null;
       }
 
       if (notes) {
@@ -130,6 +133,14 @@ export default class FireflyService {
     };
   }
 
+  getTransactionUrl(transactionId) {
+    if (!this.#BASE_URL || !transactionId) {
+      return null;
+    }
+
+    return `${this.#BASE_URL}/transactions/show/${encodeURIComponent(String(transactionId))}`;
+  }
+
   #categories = null;
 
   setCategoryList(categories) {
@@ -143,13 +154,17 @@ export default class FireflyService {
   }
 
   #tagForOutcome(outcome) {
-    const prefix = getConfigVariable("TAG_PREFIX", "ai");
+    const prefix = this.#tagPrefix();
     const tags = {
       CLASSIFIED: `${prefix}:classified`,
       ASSUMED: `${prefix}:assumed`,
       NEEDS_REVIEW: `${prefix}:needs-review`,
     };
     return tags[outcome] || `${prefix}:unknown`;
+  }
+
+  #tagPrefix() {
+    return getConfigVariable("TAG_PREFIX", "ai");
   }
 
   #buildNotes(result) {
@@ -168,6 +183,22 @@ export default class FireflyService {
       throw new Error("FIREFLY_PERSONAL_TOKEN is missing.");
     }
   }
+}
+
+function sanitizeOutcomeTags(tags, tagPrefix) {
+  if (!Array.isArray(tags)) {
+    return [];
+  }
+
+  const removableTags = new Set([
+    `${tagPrefix}:classified`,
+    `${tagPrefix}:assumed`,
+    `${tagPrefix}:needs-review`,
+  ].map((tag) => tag.toLocaleLowerCase()));
+
+  return tags.filter((tag) => typeof tag === "string"
+    && tag.trim()
+    && !removableTags.has(tag.trim().toLocaleLowerCase()));
 }
 
 class FireflyException extends Error {

@@ -70,8 +70,8 @@ export default class ClassifierService {
     this.#client = new OpenAI(opts);
   }
 
-  async classify(categories, destinationName, description, amount) {
-    const modelName = this.#model;
+  async classify(categories, destinationName, description, amount, { model } = {}) {
+    const modelName = model ? this.validateModel(model) : this.#model;
     const userPrompt = this.#buildPrompt(categories, destinationName, description, amount);
     const response = await this.#runClassifier(userPrompt, modelName);
     return normalizeClassificationResult(categories, userPrompt, response.text, response.usage, modelName);
@@ -98,14 +98,18 @@ export default class ClassifierService {
     return this.#authMode !== "codex_oauth";
   }
 
-  setModel(model) {
+  validateModel(model) {
     const normalizedModel = normalizeText(model);
     if (!normalizedModel) {
       throw new Error("Model name is required.");
     }
 
     this.#assertModelSupported(normalizedModel);
-    this.#model = normalizedModel;
+    return normalizedModel;
+  }
+
+  setModel(model) {
+    this.#model = this.validateModel(model);
   }
 
   resetModel() {
