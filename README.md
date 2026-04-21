@@ -178,7 +178,8 @@ npm start
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `FIREFLY_URL` | Yes | — | URL to your Firefly III instance |
+| `FIREFLY_URL` | Yes | — | URL used by the categorizer container to talk to Firefly III |
+| `FIREFLY_UI_URL` | No | `FIREFLY_URL` | Browser-facing Firefly III URL used for dashboard links like `Open in Firefly III` |
 | `FIREFLY_PERSONAL_TOKEN` | Yes | — | Firefly III Personal Access Token |
 | `OPENAI_AUTH_MODE` | No | `api_key` | `api_key` for the classic flow, or `codex_oauth` for a local ChatGPT/Codex auth file |
 | `OPENAI_API_KEY` | API-key mode | — | OpenAI API key (or compatible provider) |

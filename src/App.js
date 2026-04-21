@@ -81,6 +81,7 @@ export default class App {
     this.#express.post("/api/settings/model", this.#onUpdateModel.bind(this));
     this.#express.post("/webhook", this.#onWebhook.bind(this));
     this.#express.post("/api/backfill", this.#onBackfill.bind(this));
+    this.#express.post("/api/reevaluate", this.#onReevaluate.bind(this));
 
     this.#server.listen(this.#PORT, () => {
       console.log(`firefly-iii-ai-categorize v2 running on port ${this.#PORT}`);
@@ -124,6 +125,33 @@ export default class App {
       res.json(result);
     } catch (error) {
       console.error("Backfill request failed:", error);
+      res.status(error instanceof BackfillException ? 400 : 500).json({
+        error: error.message,
+      });
+    }
+  }
+
+  async #onReevaluate(req, res) {
+    try {
+      const transactionId = normalizeTransactionId(req.body?.transactionId);
+      const requestedModel = normalizeOptionalString(req.body?.model);
+      const model = requestedModel ? this.#classifier.validateModel(requestedModel) : null;
+      const queued = await this.#queueManualReevaluation({ transactionId, model });
+
+      if (!queued.queued) {
+        res.status(queued.reason === "duplicate-open-job" ? 409 : 400).json({
+          error: reasonToManualReevaluationMessage(queued.reason),
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        job: queued.job,
+        message: `Queued reevaluation for transaction ${transactionId}.`,
+      });
+    } catch (error) {
+      console.error("Manual reevaluation request failed:", error);
       res.status(error instanceof BackfillException ? 400 : 500).json({
         error: error.message,
       });
@@ -260,6 +288,31 @@ export default class App {
     }
   }
 
+  async #queueManualReevaluation({ transactionId, model = null }) {
+    const transactionGroup = await this.#firefly.getTransactionGroup(transactionId);
+    if (!transactionGroup?.id) {
+      throw new BackfillException(`Transaction ${transactionId} was not found in Firefly III.`);
+    }
+
+    const evaluation = evaluateTransactionGroup(transactionGroup, {
+      tagPrefix: this.#TAG_PREFIX,
+      includeTagged: true,
+      ignoreExistingCategory: true,
+      ignoreAiTags: true,
+    });
+
+    return this.#queueTransactionGroup({
+      source: "reevaluation",
+      transactionGroup,
+      includeTagged: true,
+      metadata: {
+        requestedModel: model,
+        selectionScope: "single_transaction",
+      },
+      evaluation,
+    });
+  }
+
   #queueTransactionGroup({
     source,
     transactionGroup,
@@ -302,13 +355,10 @@ export default class App {
     const transaction = resolvedEvaluation.transaction;
     const job = this.#jobList.createJob({
       source,
-      transactionId,
-      transactionUrl: this.#firefly.getTransactionUrl(transactionId),
-      destinationName: transaction.destination_name || "",
-      description: transaction.description || "",
-      amount: transaction.amount || null,
-      date: transaction.date || null,
-      currentOutcome: resolvedEvaluation.currentOutcome,
+      ...buildTransactionSnapshot(transactionId, transaction, {
+        currentOutcome: resolvedEvaluation.currentOutcome,
+        transactionUrl: this.#firefly.getTransactionUrl(transactionId),
+      }),
       ...metadata,
     });
 
@@ -605,10 +655,30 @@ function normalizeOptionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function normalizeTransactionId(value) {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    throw new BackfillException("transactionId is required.");
+  }
+  return normalized;
+}
+
 function buildCandidatePreview(transactionId, transaction, {
   currentOutcome = null,
   transactionUrl = null,
 } = {}) {
+  return buildTransactionSnapshot(transactionId, transaction, {
+    currentOutcome,
+    transactionUrl,
+  });
+}
+
+function buildTransactionSnapshot(transactionId, transaction, {
+  currentOutcome = null,
+  transactionUrl = null,
+} = {}) {
+  const displayAmount = resolveDisplayAmount(transaction);
+
   return {
     transactionId,
     transactionUrl,
@@ -617,6 +687,32 @@ function buildCandidatePreview(transactionId, transaction, {
     destinationName: transaction?.destination_name ?? "",
     description: transaction?.description ?? "",
     amount: transaction?.amount ?? null,
+    displayAmount: displayAmount.amount,
+    displayCurrencySymbol: displayAmount.currencySymbol,
+    displayCurrencyCode: displayAmount.currencyCode,
+    displayCurrencyDecimalPlaces: displayAmount.currencyDecimalPlaces,
+  };
+}
+
+function resolveDisplayAmount(transaction) {
+  if (transaction?.foreign_amount != null && transaction?.foreign_currency_code) {
+    return {
+      amount: transaction.foreign_amount,
+      currencySymbol: transaction.foreign_currency_symbol ?? null,
+      currencyCode: transaction.foreign_currency_code ?? null,
+      currencyDecimalPlaces: Number.isInteger(transaction.foreign_currency_decimal_places)
+        ? transaction.foreign_currency_decimal_places
+        : null,
+    };
+  }
+
+  return {
+    amount: transaction?.amount ?? null,
+    currencySymbol: transaction?.currency_symbol ?? null,
+    currencyCode: transaction?.currency_code ?? null,
+    currencyDecimalPlaces: Number.isInteger(transaction?.currency_decimal_places)
+      ? transaction.currency_decimal_places
+      : null,
   };
 }
 
@@ -662,5 +758,22 @@ function reasonToWebhookMessage(reason, transaction) {
       return "Missing transaction id";
     default:
       return "Transaction is not eligible for classification";
+  }
+}
+
+function reasonToManualReevaluationMessage(reason) {
+  switch (reason) {
+    case "duplicate-open-job":
+      return "This transaction already has an open job.";
+    case "not-withdrawal":
+      return "Only withdrawal transactions can be reevaluated.";
+    case "missing-text":
+      return "This transaction has no description or destination to classify.";
+    case "missing-transactions":
+      return "This transaction group does not contain any transaction journals.";
+    case "missing-transaction-id":
+      return "Missing transaction id.";
+    default:
+      return "This transaction is not eligible for reevaluation.";
   }
 }

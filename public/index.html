@@ -385,6 +385,26 @@
       color: var(--muted);
     }
 
+    .job-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .compact-field {
+      display: grid;
+      gap: 6px;
+      min-width: min(280px, 100%);
+      flex: 1 1 260px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .compact-field input {
+      min-width: 0;
+    }
+
     details {
       border: 1px solid var(--line);
       border-radius: 14px;
@@ -614,6 +634,8 @@
       queue: { total: 0, queued: 0, inProgress: 0, finished: 0, failed: 0 },
       settings: {}
     };
+    const reevaluationDrafts = new Map();
+    const pendingReevaluations = new Set();
 
     const socket = io();
     const metaRow = document.getElementById("meta-row");
@@ -641,33 +663,43 @@
     }
 
     socket.on("jobs", (jobs) => {
-      state.jobs = jobs;
-      state.queue = summarizeJobs(jobs);
-      render();
+      renderWithScrollAnchor(() => {
+        state.jobs = jobs;
+        state.queue = summarizeJobs(jobs);
+        render();
+      });
     });
 
     socket.on("job created", (payload) => {
-      state.jobs = payload.jobs;
-      state.queue = summarizeJobs(payload.jobs);
-      render();
+      renderWithScrollAnchor(() => {
+        state.jobs = payload.jobs;
+        state.queue = summarizeJobs(payload.jobs);
+        render();
+      });
     });
 
     socket.on("job updated", (payload) => {
-      state.jobs = payload.jobs;
-      state.queue = summarizeJobs(payload.jobs);
-      render();
+      renderWithScrollAnchor(() => {
+        state.jobs = payload.jobs;
+        state.queue = summarizeJobs(payload.jobs);
+        render();
+      });
     });
 
     socket.on("stats updated", (stats) => {
-      state.stats = stats;
-      render();
+      renderWithScrollAnchor(() => {
+        state.stats = stats;
+        render();
+      });
     });
 
     socket.on("settings updated", (settings) => {
-      state.settings = settings;
-      syncModelControls();
-      syncBackfillControls();
-      render();
+      renderWithScrollAnchor(() => {
+        state.settings = settings;
+        syncModelControls();
+        syncBackfillControls();
+        render();
+      });
     });
 
     async function refreshState() {
@@ -690,6 +722,58 @@
       applyModelButton.addEventListener("click", () => saveModel(false));
       resetModelButton.addEventListener("click", () => saveModel(true));
       scopeSelect.addEventListener("change", syncBackfillControls);
+      jobsMount.addEventListener("input", onJobsInput);
+      jobsMount.addEventListener("click", onJobsClick);
+    }
+
+    function onJobsInput(event) {
+      const input = event.target.closest('input[data-role="reevaluate-model"]');
+      if (!input) {
+        return;
+      }
+
+      reevaluationDrafts.set(input.dataset.jobId, input.value);
+    }
+
+    async function onJobsClick(event) {
+      const button = event.target.closest('button[data-action="reevaluate"]');
+      if (!button) {
+        return;
+      }
+
+      const jobId = button.dataset.jobId;
+      const transactionId = button.dataset.transactionId;
+      const model = (reevaluationDrafts.get(jobId) || "").trim();
+      if (!transactionId || pendingReevaluations.has(jobId)) {
+        return;
+      }
+
+      pendingReevaluations.add(jobId);
+      renderWithScrollAnchor(() => render());
+
+      try {
+        const response = await fetch("/api/reevaluate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transactionId,
+            model: model || null,
+          }),
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Reevaluation request failed.");
+        }
+
+        reevaluationDrafts.delete(jobId);
+        setBackfillMessage(payload.message || `Queued reevaluation for transaction ${transactionId}.`);
+      } catch (error) {
+        setBackfillMessage(error.message, "error");
+      } finally {
+        pendingReevaluations.delete(jobId);
+        renderWithScrollAnchor(() => render());
+      }
     }
 
     async function runBackfill(dryRun) {
@@ -788,6 +872,53 @@
       backfillNote.textContent = message;
     }
 
+    function renderWithScrollAnchor(renderFn) {
+      const anchor = captureScrollAnchor();
+      renderFn();
+
+      if (!anchor) {
+        return;
+      }
+
+      requestAnimationFrame(() => restoreScrollAnchor(anchor));
+    }
+
+    function captureScrollAnchor() {
+      if (window.scrollY < 160) {
+        return null;
+      }
+
+      const jobCards = Array.from(jobsMount.querySelectorAll("article.job[data-job-id]"));
+      for (const card of jobCards) {
+        const rect = card.getBoundingClientRect();
+        if (rect.bottom > 80) {
+          return {
+            jobId: card.dataset.jobId,
+            top: rect.top,
+          };
+        }
+      }
+
+      return null;
+    }
+
+    function restoreScrollAnchor(anchor) {
+      if (!anchor?.jobId) {
+        return;
+      }
+
+      const selector = `.job[data-job-id="${escapeSelector(anchor.jobId)}"]`;
+      const card = jobsMount.querySelector(selector);
+      if (!card) {
+        return;
+      }
+
+      const delta = card.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(delta) > 1) {
+        window.scrollBy(0, delta);
+      }
+    }
+
     function render() {
       renderMeta();
       renderModelSummary();
@@ -874,7 +1005,12 @@
                   <td>${escapeHtml(formatOutcome(candidate.currentOutcome))}</td>
                   <td>${escapeHtml(formatDate(candidate.date))}</td>
                   <td>${escapeHtml(candidate.destinationName || candidate.description || "")}</td>
-                  <td class="amount-cell">${escapeHtml(formatAmount(candidate.amount))}</td>
+                  <td class="amount-cell">${escapeHtml(formatAmount(
+                    candidate.displayAmount,
+                    candidate.displayCurrencySymbol,
+                    candidate.displayCurrencyCode,
+                    candidate.displayCurrencyDecimalPlaces,
+                  ))}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -922,9 +1058,12 @@
       const outcomeClass = statusClassName(job.data?.outcome || "");
       const usage = job.data?.usage;
       const effectiveModel = job.data?.model || job.data?.requestedModel || state.settings.currentModel || null;
+      const reevaluationDraft = reevaluationDrafts.get(job.id) || "";
+      const reevaluationPending = pendingReevaluations.has(job.id);
+      const canReevaluate = Boolean(job.data?.transactionId) && (job.status === "finished" || job.status === "failed");
 
       return `
-        <article class="job">
+        <article class="job" data-job-id="${escapeAttribute(job.id)}">
           <div class="job-top">
             <span class="pill ${statusClass}">${escapeHtml(job.status)}</span>
             ${job.data?.outcome ? `<span class="pill ${outcomeClass}">${escapeHtml(job.data.outcome)}</span>` : ""}
@@ -950,7 +1089,12 @@
             </div>
             <div class="job-field">
               <strong>Amount</strong>
-              <div class="numeric">${escapeHtml(formatAmount(job.data?.amount))}</div>
+              <div class="numeric">${escapeHtml(formatAmount(
+                job.data?.displayAmount,
+                job.data?.displayCurrencySymbol,
+                job.data?.displayCurrencyCode,
+                job.data?.displayCurrencyDecimalPlaces,
+              ))}</div>
             </div>
             <div class="job-field">
               <strong>Category</strong>
@@ -973,6 +1117,33 @@
           ${job.data?.currentOutcome && job.data?.source === "reevaluation" ? `
             <div class="note">
               Previous AI outcome: ${escapeHtml(formatOutcome(job.data.currentOutcome))}
+            </div>
+          ` : ""}
+
+          ${canReevaluate ? `
+            <div class="job-actions">
+              <label class="compact-field">
+                Reevaluate with model
+                <input
+                  type="text"
+                  data-role="reevaluate-model"
+                  data-job-id="${escapeAttribute(job.id)}"
+                  list="model-options"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Use active model"
+                  value="${escapeAttribute(reevaluationDraft)}"
+                  ${reevaluationPending ? "disabled" : ""}
+                >
+              </label>
+              <button
+                type="button"
+                class="secondary"
+                data-action="reevaluate"
+                data-job-id="${escapeAttribute(job.id)}"
+                data-transaction-id="${escapeAttribute(job.data?.transactionId || "")}"
+                ${reevaluationPending ? "disabled" : ""}
+              >${reevaluationPending ? "Queueing reevaluation..." : "Reevaluate This Entry"}</button>
             </div>
           ` : ""}
 
@@ -1107,7 +1278,7 @@
       return `<a class="inline-link" href="${escapeAttribute(transactionUrl)}" target="_blank" rel="noreferrer">${label}</a>`;
     }
 
-    function formatAmount(value) {
+    function formatAmount(value, currencySymbol = null, currencyCode = null, decimalPlaces = null) {
       if (value == null || value === "") {
         return "—";
       }
@@ -1117,10 +1288,23 @@
         return String(value);
       }
 
-      return new Intl.NumberFormat(undefined, {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
+      const normalizedDecimals = Number.isInteger(decimalPlaces) && decimalPlaces >= 0
+        ? decimalPlaces
+        : 2;
+      const number = new Intl.NumberFormat(undefined, {
+        minimumFractionDigits: normalizedDecimals,
+        maximumFractionDigits: normalizedDecimals
       }).format(parsed);
+
+      if (currencySymbol) {
+        return `${currencySymbol} ${number}`;
+      }
+
+      if (currencyCode) {
+        return `${currencyCode} ${number}`;
+      }
+
+      return number;
     }
 
     function formatNumber(value) {
@@ -1204,6 +1388,14 @@
 
     function escapeAttribute(value) {
       return escapeHtml(value);
+    }
+
+    function escapeSelector(value) {
+      if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(value);
+      }
+
+      return String(value).replace(/["\\]/g, "\\$&");
     }
 
     boot().catch((error) => {

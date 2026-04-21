@@ -15,6 +15,20 @@ test("builds a Firefly III transaction URL", async () => {
   });
 });
 
+test("uses the explicit Firefly UI URL for browser links", async () => {
+  await withEnv({
+    FIREFLY_URL: "http://firefly_iii_app:8080",
+    FIREFLY_UI_URL: "https://money.example.com/firefly/",
+    FIREFLY_PERSONAL_TOKEN: "test-token",
+  }, async () => {
+    const service = new FireflyService();
+    assert.equal(
+      service.getTransactionUrl("123"),
+      "https://money.example.com/firefly/transactions/show/123",
+    );
+  });
+});
+
 test("reevaluation writeback replaces AI outcome tags and clears category for needs review", async () => {
   await withEnv({
     FIREFLY_URL: "https://firefly.example.com",

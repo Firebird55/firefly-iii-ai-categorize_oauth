@@ -17,6 +17,8 @@ export function evaluateTransactionGroup(
     tagPrefix = "ai",
     includeTagged = false,
     scope = TRANSACTION_SELECTION_SCOPES.UNCATEGORIZED,
+    ignoreExistingCategory = false,
+    ignoreAiTags = false,
   } = {},
 ) {
   const transactionGroupId = String(group?.id ?? "");
@@ -42,7 +44,10 @@ export function evaluateTransactionGroup(
 
   const normalizedScope = normalizeScope(scope);
   if (normalizedScope === TRANSACTION_SELECTION_SCOPES.UNCATEGORIZED) {
-    if (transaction?.category_id !== null && transaction?.category_id !== undefined && transaction?.category_id !== "") {
+    if (!ignoreExistingCategory
+      && transaction?.category_id !== null
+      && transaction?.category_id !== undefined
+      && transaction?.category_id !== "") {
       return {
         eligible: false,
         reason: "already-categorized",
@@ -53,7 +58,7 @@ export function evaluateTransactionGroup(
       };
     }
 
-    if (!includeTagged && hasAiTag(transaction?.tags, tagPrefix)) {
+    if (!ignoreAiTags && !includeTagged && hasAiTag(transaction?.tags, tagPrefix)) {
       return {
         eligible: false,
         reason: "already-ai-tagged",

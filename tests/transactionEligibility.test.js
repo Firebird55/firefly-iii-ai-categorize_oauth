@@ -113,3 +113,25 @@ test("classified transaction is excluded from attention reevaluation scope", () 
   assert.equal(result.reason, "not-selected-scope");
   assert.equal(result.currentOutcome, "CLASSIFIED");
 });
+
+test("manual reevaluation can bypass category and ai-tag checks", () => {
+  const result = evaluateTransactionGroup({
+    id: "123",
+    attributes: {
+      transactions: [{
+        type: "withdrawal",
+        category_id: "7",
+        destination_name: "ALBERT HEIJN",
+        description: "Groceries",
+        tags: ["ai:classified"],
+      }],
+    },
+  }, {
+    ignoreExistingCategory: true,
+    ignoreAiTags: true,
+  });
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.reason, "eligible");
+  assert.equal(result.currentOutcome, "CLASSIFIED");
+});

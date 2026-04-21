@@ -2,12 +2,17 @@ import { getOptionalConfigVariable, getConfigVariable } from "./util.js";
 
 export default class FireflyService {
   #BASE_URL;
+  #UI_URL;
   #PERSONAL_TOKEN;
 
   constructor() {
     this.#BASE_URL = getOptionalConfigVariable("FIREFLY_URL", null);
     if (this.#BASE_URL?.endsWith("/")) {
       this.#BASE_URL = this.#BASE_URL.slice(0, -1);
+    }
+    this.#UI_URL = getOptionalConfigVariable("FIREFLY_UI_URL", this.#BASE_URL);
+    if (this.#UI_URL?.endsWith("/")) {
+      this.#UI_URL = this.#UI_URL.slice(0, -1);
     }
     this.#PERSONAL_TOKEN = getOptionalConfigVariable("FIREFLY_PERSONAL_TOKEN", null);
   }
@@ -68,6 +73,21 @@ export default class FireflyService {
       groups: data.data ?? [],
       pagination: data.meta?.pagination ?? null,
     };
+  }
+
+  async getTransactionGroup(transactionId) {
+    this.#assertConfigured();
+
+    const response = await fetch(`${this.#BASE_URL}/api/v1/transactions/${transactionId}`, {
+      headers: { Authorization: `Bearer ${this.#PERSONAL_TOKEN}` },
+    });
+
+    if (!response.ok) {
+      throw new FireflyException(response.status, response, await response.text());
+    }
+
+    const data = await response.json();
+    return data.data ?? null;
   }
 
   async updateTransaction(transactionId, transactions, result) {
@@ -134,11 +154,11 @@ export default class FireflyService {
   }
 
   getTransactionUrl(transactionId) {
-    if (!this.#BASE_URL || !transactionId) {
+    if (!this.#UI_URL || !transactionId) {
       return null;
     }
 
-    return `${this.#BASE_URL}/transactions/show/${encodeURIComponent(String(transactionId))}`;
+    return `${this.#UI_URL}/transactions/show/${encodeURIComponent(String(transactionId))}`;
   }
 
   #categories = null;
