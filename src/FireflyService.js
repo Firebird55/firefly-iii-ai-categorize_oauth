@@ -1,18 +1,19 @@
-import { getConfigVariable } from "./util.js";
+import { getOptionalConfigVariable, getConfigVariable } from "./util.js";
 
 export default class FireflyService {
   #BASE_URL;
   #PERSONAL_TOKEN;
 
   constructor() {
-    this.#BASE_URL = getConfigVariable("FIREFLY_URL");
-    if (this.#BASE_URL.endsWith("/")) {
+    this.#BASE_URL = getOptionalConfigVariable("FIREFLY_URL", null);
+    if (this.#BASE_URL?.endsWith("/")) {
       this.#BASE_URL = this.#BASE_URL.slice(0, -1);
     }
-    this.#PERSONAL_TOKEN = getConfigVariable("FIREFLY_PERSONAL_TOKEN");
+    this.#PERSONAL_TOKEN = getOptionalConfigVariable("FIREFLY_PERSONAL_TOKEN", null);
   }
 
   async getCategories() {
+    this.#assertConfigured();
     const categories = [];
     let page = 1;
 
@@ -38,6 +39,7 @@ export default class FireflyService {
   }
 
   async updateTransaction(transactionId, transactions, result) {
+    this.#assertConfigured();
     const tag = this.#tagForOutcome(result.outcome);
     const notes = this.#buildNotes(result);
 
@@ -85,6 +87,17 @@ export default class FireflyService {
     console.info(`Transaction ${transactionId} updated [${result.outcome}]`);
   }
 
+  isConfigured() {
+    return Boolean(this.#BASE_URL && this.#PERSONAL_TOKEN);
+  }
+
+  getHealthStatus() {
+    return {
+      configured: this.isConfigured(),
+      baseUrl: this.#BASE_URL,
+    };
+  }
+
   #categories = null;
 
   setCategoryList(categories) {
@@ -112,6 +125,16 @@ export default class FireflyService {
     if (result.reason) parts.push(`AI: ${result.reason}`);
     if (result.assumption) parts.push(`Assumption: ${result.assumption}`);
     return parts.join("\n") || null;
+  }
+
+  #assertConfigured() {
+    if (!this.#BASE_URL) {
+      throw new Error("FIREFLY_URL is missing.");
+    }
+
+    if (!this.#PERSONAL_TOKEN) {
+      throw new Error("FIREFLY_PERSONAL_TOKEN is missing.");
+    }
   }
 }
 

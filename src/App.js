@@ -55,7 +55,7 @@ export default class App {
       this.#express.use("/", express.static("public"));
     }
 
-    this.#express.get("/health", (_req, res) => res.json({ status: "ok" }));
+    this.#express.get("/health", this.#onHealth.bind(this));
     this.#express.post("/webhook", this.#onWebhook.bind(this));
 
     this.#server.listen(this.#PORT, () => {
@@ -138,7 +138,7 @@ export default class App {
           if (catId) result.categoryId = catId;
         }
 
-        const newData = { ...job.data, result };
+        const newData = { ...job.data, ...result };
         this.#jobList.updateJobData(job.id, newData);
 
         await this.#firefly.updateTransaction(
@@ -152,6 +152,24 @@ export default class App {
         console.error(`Classification failed for transaction ${req.body.content.id}:`, err);
         this.#jobList.setJobFailed(job.id, err.message);
       }
+    });
+  }
+
+  async #onHealth(_req, res) {
+    const fireflyStatus = this.#firefly.getHealthStatus();
+    const classifierStatus = await this.#classifier.getHealthStatus();
+    const ready = fireflyStatus.configured && classifierStatus.configured;
+
+    res.json({
+      status: ready ? "ok" : "degraded",
+      ready,
+      model: this.#classifier.getModel(),
+      authMode: this.#classifier.getAuthMode(),
+      checks: {
+        firefly: fireflyStatus,
+        classifier: classifierStatus,
+        uiEnabled: this.#ENABLE_UI,
+      },
     });
   }
 }

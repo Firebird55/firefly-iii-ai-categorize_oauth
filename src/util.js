@@ -8,8 +8,13 @@ class MissingEnvironmentVariableException extends Error {
     }
 }
 
+export function hasConfigVariable(name) {
+    const value = process.env[name];
+    return typeof value === "string" && value.trim() !== "";
+}
+
 export function getConfigVariable(name, defaultValue = null) {
-    if (!process.env.hasOwnProperty(name) || process.env[name] == null) {
+    if (!hasConfigVariable(name)) {
         if (defaultValue == null) {
             throw new MissingEnvironmentVariableException(name)
         }
@@ -17,5 +22,9 @@ export function getConfigVariable(name, defaultValue = null) {
         return defaultValue;
     }
 
-    return process.env[name];
+    return process.env[name].trim();
+}
+
+export function getOptionalConfigVariable(name, defaultValue = null) {
+    return hasConfigVariable(name) ? process.env[name].trim() : defaultValue;
 }

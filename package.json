@@ -6,13 +6,14 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test tests/"
+    "test": "node --test"
   },
   "author": "OpenAccountants (fork of bahuma20/firefly-iii-ai-categorize)",
   "license": "AGPL-3.0",
   "dependencies": {
+    "@mariozechner/pi-ai": "^0.68.0",
     "express": "^5.1.0",
-    "openai": "^4.86.2",
+    "openai": "^6.34.0",
     "queue": "^7.0.0",
     "socket.io": "^4.8.1",
     "uuid": "^11.1.0"
